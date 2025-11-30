@@ -6,7 +6,8 @@ import setproctitle
 import numpy as np
 from pathlib import Path
 import torch
-
+import os
+os.environ["SDL_VIDEODRIVER"] = "dummy"
 sys.path.append("../../")
 from mat.config import get_config
 from mat.envs.football.football_env import FootballEnv
@@ -127,7 +128,7 @@ def main(args):
                          name=str(all_args.algorithm_name) + "_" +
                               str(all_args.experiment_name) +
                               "_seed" + str(all_args.seed),
-                         group=all_args.map_name,
+                         group=all_args.scenario,
                          dir=str(run_dir),
                          job_type="training",
                          reinit=True)

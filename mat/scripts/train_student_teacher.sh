@@ -1,6 +1,6 @@
 #!/bin/sh
 
-#SBATCH -p dgx-a100-40g          # Partition
+#SBATCH -p dgx-a100-80g          # Partition
 #SBATCH -G 1                     # Number of GPU
 #SBATCH -t 1-0                   # Set time limit (1day) *
 #SBATCH -J run                   # Job name
@@ -9,8 +9,8 @@
 #SBATCH -o dump/stdout.%J             # stdout file name. %J is the job number.
 #SBATCH -e dump/stderr.%J             # stderro file name. %J is the job number.
 
-chmod +x ../../.venv/bin/activate
-source ../../.venv/bin/activate
+# chmod +x ../../.venv/bin/activate
+# source ../../.venv/bin/activate
 
 env="MPE"
 scenario="simple_spread"  # simple_speaker_listener # simple_reference simple_spread
@@ -24,12 +24,15 @@ num_env_steps=20000000
 #num_env_steps=200
 final_noise_rate=0
 eval_noise_rate=0
+
 user_name="matsukawa-naoki555-university-of-tokyo"
 
+student_kl_coef=1.0
+student_rl_coef=0.5
 
 
 echo "env is ${env}, scenario is ${scenario}, algo is ${algo}, exp is ${exp}, seed is ${seed}"
-CUDA_VISIBLE_DEVICES=0 python train/train_mpe.py \
+CUDA_VISIBLE_DEVICES=0 uv run train/train_mpe.py \
  --env_name ${env} --algorithm_name ${algo} \
  --experiment_name ${exp} \
  --scenario_name ${scenario} \
@@ -42,7 +45,9 @@ CUDA_VISIBLE_DEVICES=0 python train/train_mpe.py \
  --clip_param 0.05 --use_ReLU --gain 0.01 --lr 7e-4 \
  --critic_lr 7e-4 --use_eval \
  --user_name ${user_name} \
- --save_gifs --num_env_steps ${num_env_steps} \
+ --num_env_steps ${num_env_steps} \
  --final_noise_rate ${final_noise_rate} \
  --eval_noise_rate ${eval_noise_rate}\
+ --student_kl_coef ${student_kl_coef} \
+ --student_rl_coef ${student_rl_coef}
   

@@ -17,18 +17,23 @@ exp="single"
 seed=1
 
 
-eval_noise_rate=0
-final_noise_rate=0
+student_kl_coef=1.0
+student_rl_coef=1.0
+
 user_name="matsukawa-naoki555-university-of-tokyo"
 
 echo "env is ${env}, map is ${map}, algo is ${algo}, exp is ${exp}, seed is ${seed}"
-CUDA_VISIBLE_DEVICES=0 python train/train_smac.py --env_name ${env}\
+export CUDA_VISIBLE_DEVICES=$(nvidia-smi --query-gpu=memory.free,index --format=csv,nounits,noheader | sort -nr | head -1 | awk -F', ' '{print $2}')
+echo "Using GPU device: $CUDA_VISIBLE_DEVICES"
+echo "coef kl: ${student_kl_coef}, coef rl: ${student_rl_coef}"
+
+python train/train_smac.py --env_name ${env}\
  --algorithm_name ${algo} \
  --experiment_name ${exp} \
  --map_name ${map} \
  --seed ${seed} \
  --n_training_threads 16 \
- --n_rollout_threads 1 \
+ --n_rollout_threads 4 \
  --num_mini_batch 1 \
  --episode_length 100 \
  --num_env_steps 10000000 \
@@ -37,6 +42,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_smac.py --env_name ${env}\
  --save_interval 100000 \
  --use_value_active_masks \
  --use_eval  \
+ --distillation \
  --user_name ${user_name} \
- --eval_noise_rate ${eval_noise_rate} \
- --final_noise_rate ${final_noise_rate} 
+ --student_kl_coef ${student_kl_coef} \
+ --student_rl_coef ${student_rl_coef}

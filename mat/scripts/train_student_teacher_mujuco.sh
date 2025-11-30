@@ -11,8 +11,14 @@
 #SBATCH -e dump/stderr.%J             # stderro file name. %J is the job number.
 
 env="mujoco"
+scenario="Ant-v2"
+scenario="HumanoidStandup-v2"
 scenario="HalfCheetah-v2"
+
+agent_conf="2x4"
+agent_conf="17x1"
 agent_conf="6x1"
+
 agent_obsk=0
 faulty_node=-1
 #eval_faulty_node="-1 0 1 2 3 4 5"
@@ -20,17 +26,21 @@ eval_faulty_node="-1"
 algo="mat"
 exp="single"
 seed=1
-num_env_steps=10000000*2
+num_env_steps=20000000
 final_noise_rate=0
 eval_noise_rate=0.5
 user_name="matsukawa-naoki555-university-of-tokyo"
+
+student_kl_coef=1.0
+student_rl_coef=0.5
+student_rl_coef=0
 
 export MUJOCO_PY_MUJOCO_PATH="$HOME/.mujoco/mujoco210"
 echo "MUJOCO_PY_MUJOCO_PATH=${MUJOCO_PY_MUJOCO_PATH}"
 export LD_LIBRARY_PATH="$MUJOCO_PY_MUJOCO_PATH/bin:$LD_LIBRARY_PATH"
 echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"
 
-echo "env=${env}, scenario=${scenario}, algo=${algo}, exp=${exp}, seed=${seed}"
+echo "env=${env}, scenario=${scenario}, algo=${algo}, exp=${exp}, seed=${seed}" 
 
 CUDA_VISIBLE_DEVICES=0 \
 python train/train_mujoco.py \
@@ -52,6 +62,5 @@ python train/train_mujoco.py \
   --use_eval --add_center_xy --use_state_agent \
   --use_value_active_masks --use_policy_active_masks \
   --user_name "${user_name}" \
-    --final_noise_rate "${final_noise_rate}" \
-    --eval_noise_rate "${eval_noise_rate}" \
-  --gradual
+    --student_kl_coef ${student_kl_coef} \
+ --student_rl_coef ${student_rl_coef}
