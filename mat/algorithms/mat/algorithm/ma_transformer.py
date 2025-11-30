@@ -308,5 +308,65 @@ class MultiAgentTransformer(nn.Module):
         v_tot, obs_rep = self.encoder(state, obs)
         return v_tot
 
+    def compute_discrete_logits(self, obs, actions, available_actions=None):
+        """
+        Compute decoder logits conditioned on observed actions (for knowledge distillation).
+        """
+        if self.action_type != 'Discrete':
+            raise NotImplementedError
 
+        ori_shape = np.shape(obs)
+        state = np.zeros((*ori_shape[:-1], 37), dtype=np.float32)
 
+        state = check(state).to(**self.tpdv)
+        obs = check(obs).to(**self.tpdv)
+        actions = check(actions).to(**self.tpdv).long()
+
+        batch_size = obs.shape[0]
+        _, obs_rep = self.encoder(state, obs)
+
+        shifted_action = torch.zeros(
+            (batch_size, self.n_agent, self.action_dim + 1),
+            device=obs.device,
+            dtype=obs.dtype
+        )
+        shifted_action[:, 0, 0] = 1.0
+
+        if self.n_agent > 1:
+            one_hot_action = F.one_hot(actions.squeeze(-1), num_classes=self.action_dim).to(obs.dtype)
+            shifted_action[:, 1:, 1:] = one_hot_action[:, :-1, :]
+
+        logits = self.decoder(shifted_action, obs_rep, obs)
+        if available_actions is not None:
+            available_actions = check(available_actions).to(**self.tpdv)
+            logits = logits.masked_fill(available_actions == 0, float('-inf'))
+
+        return logits
+
+    def compute_continuous_params(self, obs, actions):
+        """
+        Compute Gaussian parameters conditioned on observed actions (for knowledge distillation).
+        """
+        if self.action_type != 'Continuous':
+            raise NotImplementedError
+
+        ori_shape = np.shape(obs)
+        state = np.zeros((*ori_shape[:-1], 37), dtype=np.float32)
+
+        state = check(state).to(**self.tpdv)
+        obs = check(obs).to(**self.tpdv)
+        actions = check(actions).to(**self.tpdv)
+
+        batch_size = obs.shape[0]
+        _, obs_rep = self.encoder(state, obs)
+
+        shifted_action = torch.zeros((batch_size, self.n_agent, self.action_dim),
+                                     device=obs.device, dtype=obs.dtype)
+        if self.n_agent > 1:
+            shifted_action[:, 1:, :] = actions[:, :-1, :]
+
+        means = self.decoder(shifted_action, obs_rep, obs)
+        action_std = torch.sigmoid(self.decoder.log_std) * 0.5
+        log_std = torch.log(action_std + 1e-8).view(1, 1, -1).expand_as(means)
+
+        return means, log_std
