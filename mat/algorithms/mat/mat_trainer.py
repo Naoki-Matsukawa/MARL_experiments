@@ -47,6 +47,7 @@ class MATTrainer:
 
         student_lr = getattr(args, "student_lr", getattr(policy.optimizer, "defaults", {}).get("lr", 1e-3))
         self.use_distillation = getattr(args, "distillation", False)
+        self.student_value_coef = getattr(args, "student_value_coef", 1.0)
         if self.policy.action_type == 'Discrete':
             policy_cls = DiscreteRecurrentPolicy
             student_kwargs = {}
@@ -55,6 +56,8 @@ class MATTrainer:
             student_kwargs = {"log_std_init": getattr(args, "student_log_std_init", 0.0)}
 
         if self.use_distillation:
+            value_dim = getattr(getattr(self.policy.transformer, "encoder", None), "n_embd", None)
+            student_kwargs = {**student_kwargs, "value_dim": value_dim}
             self.student_policy = [
                 policy_cls(self.policy.obs_dim, self.policy.act_dim, lr=student_lr, **student_kwargs).to(device)
                 for _ in range(num_agents)
@@ -204,6 +207,7 @@ class MATTrainer:
         if self.use_distillation:
             train_info['student_kl_loss'] = 0
             train_info['student_rl_loss'] = 0
+            train_info['student_value_loss'] = 0
 
 
         # share_obs_batch, obs_batch, rnn_states_batch, rnn_states_critic_batch, actions_batch, \
@@ -228,11 +232,14 @@ class MATTrainer:
                         available_actions_batch
                     )
                     teacher_probs = dist_info['probs'].detach()
+                    teacher_encoder = dist_info.get('encoder_rep')
+                    teacher_encoder = teacher_encoder.detach() if teacher_encoder is not None else None
 
                     obs_agent_view = self._reshape_agent_view(obs_batch)
                     actions_agent_view = self._reshape_agent_view(actions_batch)
                     active_masks_agent_view = self._reshape_agent_view(active_masks_batch)
                     adv_agent_view = self._reshape_agent_view(adv_batch) if adv_batch is not None else None
+                    teacher_encoder_agent_view = self._reshape_agent_view(teacher_encoder) if teacher_encoder is not None else None
 
                     for agent_id in range(self.num_agents):
                         agent_obs = obs_agent_view[:, agent_id, ...]
@@ -240,6 +247,7 @@ class MATTrainer:
                         agent_actions = actions_agent_view[:, agent_id, ...]
                         agent_active_masks = active_masks_agent_view[:, agent_id, ...] if active_masks_agent_view is not None else None
                         agent_advantages = adv_agent_view[:, agent_id, ...] if adv_agent_view is not None else None
+                        agent_teacher_encoder = teacher_encoder_agent_view[:, agent_id, ...] if teacher_encoder_agent_view is not None else None
 
                         student_loss, hidden_state, student_info = self._calculate_discrete_student_loss(
                             self.student_policy[agent_id],
@@ -248,11 +256,13 @@ class MATTrainer:
                             agent_actions,
                             agent_advantages,
                             agent_active_masks,
+                            agent_teacher_encoder,
                             self.student_hidden_state[agent_id]
                         )
                         train_info['student_kl_loss'] += student_info['kl_loss']
                         train_info['student_rl_loss'] += student_info['rl_loss']
-                        self.student_hidden_state[agent_id] = hidden_state.detach() if hidden_state is not None else None
+                        train_info['student_value_loss'] += student_info['value_loss']
+                        self.student_hidden_state[agent_id] = self._detach_hidden(hidden_state)
 
                         self.student_optimizers[agent_id].zero_grad()
                         student_loss.backward()
@@ -266,11 +276,14 @@ class MATTrainer:
                     )
                     teacher_means = dist_info['means'].detach()
                     teacher_log_stds = dist_info['log_stds'].detach()
+                    teacher_encoder = dist_info.get('encoder_rep')
+                    teacher_encoder = teacher_encoder.detach() if teacher_encoder is not None else None
 
                     obs_agent_view = self._reshape_agent_view(obs_batch)
                     actions_agent_view = self._reshape_agent_view(actions_batch)
                     active_masks_agent_view = self._reshape_agent_view(active_masks_batch)
                     adv_agent_view = self._reshape_agent_view(adv_batch) if adv_batch is not None else None
+                    teacher_encoder_agent_view = self._reshape_agent_view(teacher_encoder) if teacher_encoder is not None else None
                     for agent_id in range(self.num_agents):
                         agent_obs = obs_agent_view[:, agent_id, ...]
                         agent_actions = actions_agent_view[:, agent_id, ...]
@@ -278,6 +291,7 @@ class MATTrainer:
                         agent_advantages = adv_agent_view[:, agent_id, ...] if adv_agent_view is not None else None
                         agent_teacher_mean = teacher_means[:, agent_id, ...]
                         agent_teacher_log_std = teacher_log_stds[:, agent_id, ...]
+                        agent_teacher_encoder = teacher_encoder_agent_view[:, agent_id, ...] if teacher_encoder_agent_view is not None else None
 
                         student_loss, hidden_state, student_info = self._calculate_continuous_student_loss(
                             self.student_policy[agent_id],
@@ -287,11 +301,13 @@ class MATTrainer:
                             agent_actions,
                             agent_advantages,
                             agent_active_masks,
+                            agent_teacher_encoder,
                             self.student_hidden_state[agent_id]
                         )
                         train_info['student_kl_loss'] += student_info['kl_loss']
                         train_info['student_rl_loss'] += student_info['rl_loss']
-                        self.student_hidden_state[agent_id] = hidden_state.detach() if hidden_state is not None else None
+                        train_info['student_value_loss'] += student_info['value_loss']
+                        self.student_hidden_state[agent_id] = self._detach_hidden(hidden_state)
 
                         self.student_optimizers[agent_id].zero_grad()
                         student_loss.backward()
@@ -323,6 +339,9 @@ class MATTrainer:
         if tensor is None:
             return None
         batch_size = tensor.shape[0]
+        if batch_size % self.num_agents != 0:
+            # already shaped as (mini_batch, num_agents, ...)
+            return tensor
         mini_batch = batch_size // self.num_agents
         if torch.is_tensor(tensor):
             return tensor.contiguous().view(mini_batch, self.num_agents, *tensor.shape[1:])
@@ -331,9 +350,17 @@ class MATTrainer:
         else:
             raise TypeError(f"Unsupported tensor type for reshape: {type(tensor)}")
 
+    def _detach_hidden(self, hidden_state):
+        if hidden_state is None:
+            return None
+        if isinstance(hidden_state, tuple):
+            return tuple(h.detach() if h is not None else None for h in hidden_state)
+        return hidden_state.detach()
+
     def _calculate_discrete_student_loss(self, student_policy, obs_batch, teacher_probs_batch, actions_batch,
-                                         advantages_batch=None, active_masks_batch=None, hidden_state=None):
-        student_info = {'kl_loss': 0.0, 'rl_loss': 0.0}
+                                         advantages_batch=None, active_masks_batch=None, teacher_encoder_batch=None,
+                                         hidden_state=None):
+        student_info = {'kl_loss': 0.0, 'rl_loss': 0.0, 'value_loss': 0.0}
 
         obs_batch = check(obs_batch).to(**self.tpdv)
         teacher_probs_batch = teacher_probs_batch.to(**self.tpdv)
@@ -341,9 +368,12 @@ class MATTrainer:
 
         if obs_batch.dim() == 2:
             obs_batch = obs_batch.unsqueeze(1)
+        actor_hidden, critic_hidden = hidden_state if isinstance(hidden_state, tuple) else (hidden_state, None)
 
-        student_probs, new_hidden = student_policy(obs_batch, hidden_state)
+        student_probs, new_actor_hidden = student_policy(obs_batch, actor_hidden)
         student_probs = student_probs.squeeze(1)
+        student_values, new_critic_hidden = student_policy.forward_value(obs_batch, critic_hidden)
+        student_values = student_values.squeeze(1)
 
         kl_elementwise = F.kl_div(
             torch.log(student_probs + 1e-8),
@@ -383,15 +413,30 @@ class MATTrainer:
             else:
                 rl_loss = pg_terms.mean()
 
-        total_loss = self.student_kl_coef * kl_loss + self.student_rl_coef * rl_loss
+        value_loss = torch.tensor(0.0, device=self.device)
+        if teacher_encoder_batch is not None:
+            teacher_encoder_batch = teacher_encoder_batch.to(**self.tpdv)
+            if teacher_encoder_batch.dim() == 2:
+                teacher_encoder_batch = teacher_encoder_batch.unsqueeze(1)
+            teacher_encoder_batch = teacher_encoder_batch.squeeze(1).detach()
+            value_elementwise = F.mse_loss(student_values, teacher_encoder_batch, reduction='none').sum(-1, keepdim=True)
+            if active_masks_batch is not None:
+                active_masks_batch = check(active_masks_batch).to(**self.tpdv)
+                value_loss = (value_elementwise * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+            else:
+                value_loss = value_elementwise.mean()
+
+        total_loss = self.student_kl_coef * kl_loss + self.student_rl_coef * rl_loss + self.student_value_coef * value_loss
         student_info['kl_loss'] = kl_loss.item()
         student_info['rl_loss'] = rl_loss.item()
+        student_info['value_loss'] = value_loss.item()
+        new_hidden = (new_actor_hidden, new_critic_hidden)
         return total_loss, new_hidden, student_info
 
     def _calculate_continuous_student_loss(self, student_policy, obs_batch, teacher_mean_batch, teacher_log_std_batch,
                                            actions_batch, advantages_batch=None, active_masks_batch=None,
-                                           hidden_state=None):
-        student_info = {'kl_loss': 0.0, 'rl_loss': 0.0}
+                                           teacher_encoder_batch=None, hidden_state=None):
+        student_info = {'kl_loss': 0.0, 'rl_loss': 0.0, 'value_loss': 0.0}
 
         obs_batch = check(obs_batch).to(**self.tpdv)
         teacher_mean_batch = check(teacher_mean_batch).to(**self.tpdv)
@@ -401,9 +446,13 @@ class MATTrainer:
         if obs_batch.dim() == 2:
             obs_batch = obs_batch.unsqueeze(1)
 
-        student_mean, student_log_std, new_hidden = student_policy(obs_batch, hidden_state)
+        actor_hidden, critic_hidden = hidden_state if isinstance(hidden_state, tuple) else (hidden_state, None)
+
+        student_mean, student_log_std, new_actor_hidden = student_policy(obs_batch, actor_hidden)
         student_mean = student_mean.squeeze(1)
         student_log_std = student_log_std.squeeze(1)
+        student_values, new_critic_hidden = student_policy.forward_value(obs_batch, critic_hidden)
+        student_values = student_values.squeeze(1)
 
         teacher_mean = teacher_mean_batch
         teacher_log_std = teacher_log_std_batch
@@ -444,7 +493,22 @@ class MATTrainer:
             else:
                 rl_loss = pg_terms.mean()
 
-        total_loss = self.student_kl_coef * kl_loss + self.student_rl_coef * rl_loss
+        value_loss = torch.tensor(0.0, device=self.device)
+        if teacher_encoder_batch is not None:
+            teacher_encoder_batch = check(teacher_encoder_batch).to(**self.tpdv)
+            if teacher_encoder_batch.dim() == 2:
+                teacher_encoder_batch = teacher_encoder_batch.unsqueeze(1)
+            teacher_encoder_batch = teacher_encoder_batch.squeeze(1).detach()
+            value_elementwise = F.mse_loss(student_values, teacher_encoder_batch, reduction='none').sum(-1, keepdim=True)
+            if active_masks_batch is not None:
+                active_flat = check(active_masks_batch).to(**self.tpdv)
+                value_loss = (value_elementwise * active_flat).sum() / (active_flat.sum() + 1e-8)
+            else:
+                value_loss = value_elementwise.mean()
+
+        total_loss = self.student_kl_coef * kl_loss + self.student_rl_coef * rl_loss + self.student_value_coef * value_loss
         student_info['kl_loss'] = kl_loss.item()
         student_info['rl_loss'] = rl_loss.item()
+        student_info['value_loss'] = value_loss.item()
+        new_hidden = (new_actor_hidden, new_critic_hidden)
         return total_loss, new_hidden, student_info

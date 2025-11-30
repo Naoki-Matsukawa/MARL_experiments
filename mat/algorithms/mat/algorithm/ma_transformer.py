@@ -308,7 +308,7 @@ class MultiAgentTransformer(nn.Module):
         v_tot, obs_rep = self.encoder(state, obs)
         return v_tot
 
-    def compute_discrete_logits(self, obs, actions, available_actions=None):
+    def compute_discrete_logits(self, obs, actions, available_actions=None, return_encoder=False):
         """
         Compute decoder logits conditioned on observed actions (for knowledge distillation).
         """
@@ -341,9 +341,11 @@ class MultiAgentTransformer(nn.Module):
             available_actions = check(available_actions).to(**self.tpdv)
             logits = logits.masked_fill(available_actions == 0, float('-inf'))
 
+        if return_encoder:
+            return logits, obs_rep
         return logits
 
-    def compute_continuous_params(self, obs, actions):
+    def compute_continuous_params(self, obs, actions, return_encoder=False):
         """
         Compute Gaussian parameters conditioned on observed actions (for knowledge distillation).
         """
@@ -369,4 +371,6 @@ class MultiAgentTransformer(nn.Module):
         action_std = torch.sigmoid(self.decoder.log_std) * 0.5
         log_std = torch.log(action_std + 1e-8).view(1, 1, -1).expand_as(means)
 
+        if return_encoder:
+            return means, log_std, obs_rep
         return means, log_std

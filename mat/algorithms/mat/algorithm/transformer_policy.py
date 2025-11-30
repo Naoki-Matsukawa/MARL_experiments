@@ -233,12 +233,16 @@ class TransformerPolicy:
             available_actions = available_actions.reshape(-1, self.num_agents, self.act_dim)
 
         if self.action_type == 'Discrete':
-            probs = self.transformer.compute_discrete_logits(obs, actions, available_actions)
-            probs = torch.softmax(probs, dim=-1)
-            return {'type': 'discrete', 'probs': probs}
+            logits, encoder_rep = self.transformer.compute_discrete_logits(
+                obs, actions, available_actions, return_encoder=True
+            )
+            probs = torch.softmax(logits, dim=-1)
+            return {'type': 'discrete', 'probs': probs, 'encoder_rep': encoder_rep}
         else:
-            means, log_stds = self.transformer.compute_continuous_params(obs, actions)
-            return {'type': 'continuous', 'means': means, 'log_stds': log_stds}
+            means, log_stds, encoder_rep = self.transformer.compute_continuous_params(
+                obs, actions, return_encoder=True
+            )
+            return {'type': 'continuous', 'means': means, 'log_stds': log_stds, 'encoder_rep': encoder_rep}
 
     def save(self, save_dir, episode):
         torch.save(self.transformer.state_dict(), str(save_dir) + "/transformer_" + str(episode) + ".pt")

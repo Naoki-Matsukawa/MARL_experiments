@@ -12,10 +12,16 @@ class BaseRecurrentPolicy(nn.Module):
             nn.ReLU(),
         )
         self.rnn = nn.GRU(input_size=128, hidden_size=hidden_dim, batch_first=True)
+        self.value_rnn = nn.GRU(input_size=128, hidden_size=hidden_dim, batch_first=True)
 
     def _forward_core(self, obs_seq, hidden=None):
         x = self.obs_encoder(obs_seq)
         out, new_hidden = self.rnn(x, hidden)
+        return out, new_hidden
+
+    def _forward_value_core(self, obs_seq, hidden=None):
+        x = self.obs_encoder(obs_seq)
+        out, new_hidden = self.value_rnn(x, hidden)
         return out, new_hidden
     
     def update(self, loss):
@@ -26,10 +32,11 @@ class BaseRecurrentPolicy(nn.Module):
 
 
 class DiscreteRecurrentPolicy(BaseRecurrentPolicy):
-    def __init__(self, obs_dim, action_dim, hidden_dim=128, lr=1e-3):
+    def __init__(self, obs_dim, action_dim, hidden_dim=128, lr=1e-3, value_dim=None):
         super().__init__(obs_dim, hidden_dim)
         self.action_dim = action_dim
         self.policy_head = nn.Linear(hidden_dim, action_dim)
+        self.value_head = nn.Linear(hidden_dim, value_dim or hidden_dim)
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
     def forward(self, obs_seq, hidden=None):
@@ -37,6 +44,11 @@ class DiscreteRecurrentPolicy(BaseRecurrentPolicy):
         logits = self.policy_head(features)
         probs = F.softmax(logits, dim=-1)
         return probs, new_hidden
+
+    def forward_value(self, obs_seq, hidden=None):
+        value_features, new_hidden = self._forward_value_core(obs_seq, hidden)
+        values = self.value_head(value_features)
+        return values, new_hidden
 
     def update(self, loss):
         self.optimizer.zero_grad()
@@ -81,11 +93,12 @@ class DiscreteRecurrentPolicy(BaseRecurrentPolicy):
 
 
 class ContinuousRecurrentPolicy(BaseRecurrentPolicy):
-    def __init__(self, obs_dim, action_dim, hidden_dim=128, lr=1e-3, log_std_init=0.0):
+    def __init__(self, obs_dim, action_dim, hidden_dim=128, lr=1e-3, log_std_init=0.0, value_dim=None):
         super().__init__(obs_dim, hidden_dim)
         self.action_dim = action_dim
         self.mean_head = nn.Linear(hidden_dim, action_dim)
         self.log_std = nn.Parameter(torch.ones(action_dim) * log_std_init)
+        self.value_head = nn.Linear(hidden_dim, value_dim or hidden_dim)
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
     def forward(self, obs_seq, hidden=None):
@@ -93,6 +106,11 @@ class ContinuousRecurrentPolicy(BaseRecurrentPolicy):
         means = self.mean_head(features)
         log_std = self.log_std.view(1, 1, -1).expand_as(means)
         return means, log_std, new_hidden
+
+    def forward_value(self, obs_seq, hidden=None):
+        value_features, new_hidden = self._forward_value_core(obs_seq, hidden)
+        values = self.value_head(value_features)
+        return values, new_hidden
 
     def update(self, loss):
         self.optimizer.zero_grad()
