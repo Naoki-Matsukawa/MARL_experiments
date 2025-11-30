@@ -397,15 +397,8 @@ class MATTrainer:
 
             actions_long = actions_batch.long()
             student_selected = torch.gather(student_probs, -1, actions_long.unsqueeze(-1)).squeeze(-1)
-            teacher_selected = torch.gather(teacher_probs_batch, -1, actions_long.unsqueeze(-1)).squeeze(-1)
-
-            new_log_probs = torch.log(student_selected + 1e-8)
-            old_log_probs = torch.log(teacher_selected + 1e-8)
-            ratio = torch.exp(new_log_probs - old_log_probs)
-
-            surr1 = ratio * advantages_batch
-            surr2 = torch.clamp(ratio, 1.0 - self.student_clip_param, 1.0 + self.student_clip_param) * advantages_batch
-            pg_terms = -torch.min(surr1, surr2)
+            log_pi = torch.log(student_selected + 1e-8)
+            pg_terms = -(log_pi * advantages_batch)
 
             if active_masks_batch is not None:
                 active_flat = active_masks_batch.squeeze(-1)
@@ -477,15 +470,8 @@ class MATTrainer:
                 advantages_batch = advantages_batch.squeeze(-1)
 
             student_dist = Normal(student_mean, torch.exp(student_log_std))
-            teacher_dist = Normal(teacher_mean, torch.exp(teacher_log_std))
-
-            new_log_probs = student_dist.log_prob(actions_batch).sum(-1)
-            old_log_probs = teacher_dist.log_prob(actions_batch).sum(-1)
-            ratio = torch.exp(new_log_probs - old_log_probs)
-
-            surr1 = ratio * advantages_batch
-            surr2 = torch.clamp(ratio, 1.0 - self.student_clip_param, 1.0 + self.student_clip_param) * advantages_batch
-            pg_terms = -torch.min(surr1, surr2)
+            log_probs = student_dist.log_prob(actions_batch).sum(-1)
+            pg_terms = -(log_probs * advantages_batch)
 
             if active_masks_batch is not None:
                 active_flat = active_masks_batch.squeeze(-1)
