@@ -57,6 +57,11 @@ class FootballRunner(Runner):
 
                 # insert data into buffer
                 self.insert(data)
+            total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
+            if getattr(self.trainer, "use_distillation", False):
+                scheduled_coef = self.trainer.schedule_student_rl_coef(total_num_steps)
+                if self.use_wandb and getattr(self.trainer, "student_rl_linear_schedule", False):
+                    wandb.log({"student_rl_coef": scheduled_coef}, step=total_num_steps)
 
             # compute return and update network
             self.compute()
@@ -85,11 +90,17 @@ class FootballRunner(Runner):
 
                 if len(done_episodes_rewards) > 0:
                     aver_episode_rewards = np.mean(done_episodes_rewards)
-                    self.writter.add_scalars("train_episode_rewards", {"aver_rewards": aver_episode_rewards}, total_num_steps)
+                    if self.use_wandb:
+                        wandb.log({"train_episode_rewards": aver_episode_rewards}, step=total_num_steps)
+                    else:
+                        self.writter.add_scalars("train_episode_rewards", {"aver_rewards": aver_episode_rewards}, total_num_steps)
                     done_episodes_rewards = []
 
                     aver_episode_scores = np.mean(done_episodes_scores)
-                    self.writter.add_scalars("train_episode_scores", {"aver_scores": aver_episode_scores}, total_num_steps)
+                    if self.use_wandb:
+                        wandb.log({"train_episode_scores": aver_episode_scores}, step=total_num_steps)
+                    else:
+                        self.writter.add_scalars("train_episode_scores", {"aver_scores": aver_episode_scores}, total_num_steps)
                     done_episodes_scores = []
                     print("some episodes done, average rewards: {}, scores: {}"
                           .format(aver_episode_rewards, aver_episode_scores))
@@ -97,6 +108,8 @@ class FootballRunner(Runner):
             # eval
             if episode % self.eval_interval == 0 and self.use_eval:
                 self.eval(total_num_steps)
+                if getattr(self.trainer, "use_distillation", False):
+                    self.eval_student(total_num_steps)
 
     def warmup(self):
         # reset env
@@ -178,13 +191,23 @@ class FootballRunner(Runner):
 
         while True:
             self.trainer.prep_rollout()
-            eval_actions, eval_rnn_states = \
-                self.trainer.policy.act(np.concatenate(eval_share_obs),
-                                        np.concatenate(eval_obs),
-                                        np.concatenate(eval_rnn_states),
-                                        np.concatenate(eval_masks),
-                                        np.concatenate(ava),
-                                        deterministic=True)
+            
+            if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
+                eval_actions, eval_rnn_states = \
+                    self.trainer.policy.act(np.concatenate(eval_share_obs),
+                                            np.concatenate(eval_obs),
+                                            np.concatenate(eval_rnn_states),
+                                            np.concatenate(eval_masks),
+                                            np.concatenate(ava),
+                                            deterministic=True)
+            elif self.algorithm_name == "r_mappo":
+                eval_actions, eval_rnn_states = \
+                    self.trainer.policy.act(np.concatenate(eval_obs),
+                                            np.concatenate(eval_rnn_states),
+                                            np.concatenate(eval_masks),
+                                            deterministic=True)
+            else:
+                raise NotImplementedError
             eval_actions = np.array(np.split(_t2n(eval_actions), self.all_args.eval_episodes))
             eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.all_args.eval_episodes))
 
@@ -222,5 +245,88 @@ class FootballRunner(Runner):
                 self.log_env(eval_env_infos, total_num_steps)
 
                 print("eval average episode rewards: {}, scores: {}."
+                      .format(np.mean(eval_episode_rewards), np.mean(eval_episode_scores)))
+                break
+
+    @torch.no_grad()
+    def eval_student(self, total_num_steps):
+        """Evaluate student policies under football evaluation settings."""
+        if not getattr(self.trainer, "use_distillation", False):
+            return
+        if self.eval_envs is None:
+            return
+
+        eval_episode = 0
+        eval_episode_rewards = []
+        one_episode_rewards = [0 for _ in range(self.all_args.eval_episodes)]
+        eval_episode_scores = []
+        one_episode_scores = [0 for _ in range(self.all_args.eval_episodes)]
+
+        eval_obs, eval_share_obs, ava = self.eval_envs.reset()
+        student_hidden_states = [
+            torch.zeros(
+                1,
+                self.all_args.eval_episodes,
+                student_policy.hidden_dim,
+                device=self.device
+            )
+            for student_policy in self.trainer.student_policy
+        ]
+
+        while True:
+            actions_per_agent = []
+            for agent_id, student_policy in enumerate(self.trainer.student_policy):
+                agent_obs = torch.as_tensor(
+                    eval_obs[:, agent_id, :],
+                    dtype=torch.float32,
+                    device=self.device
+                )
+                action_tensor, _, hidden_state = student_policy.act(
+                    agent_obs,
+                    student_hidden_states[agent_id],
+                    deterministic=True
+                )
+                student_hidden_states[agent_id] = hidden_state
+                actions_per_agent.append(action_tensor.cpu().numpy())
+
+            eval_actions = np.stack(actions_per_agent, axis=1).astype(np.int32)
+
+            # respect availability if provided
+            if ava is not None:
+                for env_idx in range(len(eval_actions)):
+                    for agent_idx in range(len(eval_actions[env_idx])):
+                        act_idx = eval_actions[env_idx][agent_idx]
+                        if ava[env_idx][agent_idx][act_idx] == 0:
+                            valid = np.nonzero(ava[env_idx][agent_idx])[0]
+                            eval_actions[env_idx][agent_idx] = valid[0] if valid.size > 0 else 0
+
+            eval_obs, eval_share_obs, eval_rewards, eval_dones, eval_infos, ava = self.eval_envs.step(eval_actions)
+            eval_rewards = np.mean(eval_rewards, axis=1).flatten()
+            one_episode_rewards += eval_rewards
+
+            eval_scores = [t_info[0]["score_reward"] for t_info in eval_infos]
+            one_episode_scores += np.array(eval_scores)
+
+            eval_dones_env = np.all(eval_dones, axis=1)
+
+            for eval_i in range(self.all_args.eval_episodes):
+                if eval_dones_env[eval_i]:
+                    eval_episode += 1
+                    eval_episode_rewards.append(one_episode_rewards[eval_i])
+                    one_episode_rewards[eval_i] = 0
+
+                    eval_episode_scores.append(one_episode_scores[eval_i])
+                    one_episode_scores[eval_i] = 0
+
+            if eval_episode >= self.all_args.eval_episodes:
+                key_average = '/student_eval_average_episode_rewards'
+                key_max = '/student_eval_max_episode_rewards'
+                key_scores = '/student_eval_average_episode_scores'
+                eval_env_infos = {key_average: eval_episode_rewards,
+                                  key_max: [np.max(eval_episode_rewards)],
+                                  key_scores: eval_episode_scores}
+                self.log_env(eval_env_infos, total_num_steps)
+
+                print("student eval average episode rewards: {}, scores: {}."
                       .format(np.mean(eval_episode_rewards), np.mean(eval_episode_scores)))
                 break

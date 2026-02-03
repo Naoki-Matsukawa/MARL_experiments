@@ -1,0 +1,6 @@
+results/
+videos/
+dump/
+.venv/
+__pycache__/
+.venv_py310/

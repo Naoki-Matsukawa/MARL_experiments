@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #SBATCH -p dgx-a100-40g          # Partition
 #SBATCH -G 1                     # Number of GPU
 #SBATCH -t 1-0                   # Set time limit (1day) *
@@ -13,22 +13,35 @@
 env="football"
 #scenario="academy_counterattack_easy"
 scenario="11_vs_11_hard_stochastic"
-scenario="11_vs_11_easy_stochastic"
+# scenario="11_vs_11_easy_stochastic"
 # academy_pass_and_shoot_with_keeper
 # academy_3_vs_1_with_keeper
 # academy_counterattack_easy
+scenario="academy_counterattack_easy"
 n_agent=4
 algo="mat"
+# algo="r_mappo"
 exp="single"
-seed=1
-final_noise_rate=0
-eval_noise_rate=0
+seed=5
+
+student_kl_coef=1.0
+student_rl_coef=1.0
+student_rl_coef_start=0.0
+student_aux_value_coef=0.0
 user_name="matsukawa-naoki555-university-of-tokyo"
 
 echo "env is ${env}, scenario is ${scenario}, algo is ${algo}, exp is ${exp}, seed is ${seed}"
 
- CUDA_VISIBLE_DEVICES=0 \
- python train/train_football.py \
+export CUDA_VISIBLE_DEVICES=$(nvidia-smi --query-gpu=memory.free,index --format=csv,nounits,noheader | sort -nr | head -1 | awk -F', ' '{print $2}')
+echo "Using GPU device: $CUDA_VISIBLE_DEVICES"
+echo "coef kl: ${student_kl_coef}, coef rl: ${student_rl_coef}"
+
+seeds=(6 7 8 9 10)
+
+for seed in "${seeds[@]}";
+do
+echo "Starting training with seed ${seed} ..."
+python train/train_football.py \
  --seed ${seed} \
  --env_name ${env} \
  --algorithm_name ${algo} \
@@ -50,7 +63,20 @@ echo "env is ${env}, scenario is ${scenario}, algo is ${algo}, exp is ${exp}, se
  --use_eval \
  --use_value_active_masks \
  --use_policy_active_masks \
+ --save_gifs \
+ --distillation \
  --user_name ${user_name} \
-    --save_gifs \
-    --final_noise_rate ${final_noise_rate} \
-    --eval_noise_rate ${eval_noise_rate} 
+ --student_kl_coef ${student_kl_coef} \
+ --student_rl_coef ${student_rl_coef}\
+ --student_rl_linear_schedule \
+ --student_rl_coef_start ${student_rl_coef_start} \
+ --max_grad_norm 5 \
+ --student_aux_value_coef ${student_aux_value_coef} &
+
+
+done
+wait    
+
+echo "All Python scripts have finished."
+
+    

@@ -28,7 +28,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_smac.py --env_name ${env}\
  --map_name ${map} \
  --seed ${seed} \
  --n_training_threads 16 \
- --n_rollout_threads 1 \
+ --n_rollout_threads 32 \
  --num_mini_batch 1 \
  --episode_length 100 \
  --num_env_steps 10000000 \

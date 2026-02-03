@@ -119,7 +119,8 @@ def main(args):
                          group=all_args.map_name,
                          dir=str(run_dir),
                          job_type="training",
-                         reinit=True)
+                         reinit=True,
+                         save_code=True)
     else:
         if not run_dir.exists():
             curr_run = 'run1'

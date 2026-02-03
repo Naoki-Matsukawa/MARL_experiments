@@ -89,7 +89,7 @@ def main(args):
     all_args = parse_args(args, parser)
     print("mumu config: ", all_args)
 
-    if all_args.algorithm_name == "rmappo":
+    if all_args.algorithm_name == "r_mappo":
         all_args.use_recurrent_policy = True
         assert (all_args.use_recurrent_policy or all_args.use_naive_recurrent_policy), ("check recurrent policy!")
     elif all_args.algorithm_name == "mappo" or all_args.algorithm_name == "mat" or all_args.algorithm_name == "mat_dec":
@@ -121,17 +121,22 @@ def main(args):
         os.makedirs(str(run_dir))
 
     if all_args.use_wandb:
+        project_name = all_args.env_name
+        run_name = str(all_args.scenario) + "_" + \
+                    str(all_args.algorithm_name) + "_" + \
+                   str(all_args.experiment_name) + \
+                   "_seed" + str(all_args.seed)
         run = wandb.init(config=all_args,
-                         project=all_args.env_name,
+                         project=project_name,
                          entity=all_args.user_name,
                          notes=socket.gethostname(),
-                         name=str(all_args.algorithm_name) + "_" +
-                              str(all_args.experiment_name) +
-                              "_seed" + str(all_args.seed),
+                         name=run_name, 
                          group=all_args.scenario,
                          dir=str(run_dir),
                          job_type="training",
-                         reinit=True)
+                         reinit=True,
+                         save_code=True
+                         )
     else:
         if not run_dir.exists():
             curr_run = 'run1'

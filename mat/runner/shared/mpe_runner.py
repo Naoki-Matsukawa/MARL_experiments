@@ -4,7 +4,7 @@ import torch
 from mat.runner.shared.base_runner import Runner
 import wandb
 import imageio
-
+import random
 def _t2n(x):
     return x.detach().cpu().numpy()
 
@@ -18,6 +18,8 @@ class MPERunner(Runner):
 
         start = time.time()
         episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
+        previous_obs = self.envs.reset()
+        self.noise_rate = 0
 
         for episode in range(episodes):
             if self.use_linear_lr_decay:
@@ -29,9 +31,18 @@ class MPERunner(Runner):
                     
                 # Obser reward and next obs
                 obs, rewards, dones, infos = self.envs.step(actions_env)
+                # wandb.log({"rewards": np.mean(rewards)})
+                # print("rewards: ", rewards.shape)
+                self.noise_rate = self.calculate_noise_rate(episode, episodes)
+                if step >0:
+                    for i in range(len(obs)):
+                        if random.random() < self.noise_rate:
+                            obs[i] = previous_obs[i] 
+                wandb.log({"noise_rate": self.noise_rate})
+                
 
                 data = obs, rewards, dones, infos, values, actions, action_log_probs, rnn_states, rnn_states_critic
-
+                previous_obs = obs.copy()
                 # insert data into buffer
                 self.insert(data)
 
@@ -77,6 +88,18 @@ class MPERunner(Runner):
             # eval
             if episode % self.eval_interval == 0 and self.use_eval:
                 self.eval(total_num_steps)
+                if getattr(self.trainer, "use_distillation", False):
+                    self.eval_student(total_num_steps)
+                # self.render()
+          
+
+    def calculate_noise_rate(self, episode,episodes):
+        """Calculate the noise rate for exploration."""
+        if not self.gradual:
+            return self.final_noise_rate
+        else:
+            return min(self.final_noise_rate * (episode/episodes*2),self.final_noise_rate)
+
 
     def warmup(self):
         # reset env
@@ -151,14 +174,25 @@ class MPERunner(Runner):
         eval_rnn_states = np.zeros((self.n_eval_rollout_threads, *self.buffer.rnn_states.shape[2:]), dtype=np.float32)
         eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
 
+        previous_eval_obs = eval_obs.copy()
+
         for eval_step in range(self.episode_length):
             self.trainer.prep_rollout()
-            eval_action, eval_rnn_states = self.trainer.policy.act(
-                                                np.concatenate(eval_share_obs),
-                                                np.concatenate(eval_obs),
-                                                np.concatenate(eval_rnn_states),
-                                                np.concatenate(eval_masks),
-                                                deterministic=True)
+            if self.algorithm_name == "r_mappo":
+                # r_mappo actor only expects local obs, not centralized obs
+                eval_action, eval_rnn_states = self.trainer.policy.act(
+                    np.concatenate(eval_obs),
+                    np.concatenate(eval_rnn_states),
+                    np.concatenate(eval_masks),
+                    deterministic=True
+                )
+            else:
+                eval_action, eval_rnn_states = self.trainer.policy.act(
+                    np.concatenate(eval_share_obs),
+                    np.concatenate(eval_obs),
+                    np.concatenate(eval_rnn_states),
+                    np.concatenate(eval_masks),
+                    deterministic=True)
             eval_actions = np.array(np.split(_t2n(eval_action), self.n_eval_rollout_threads))
             eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
             
@@ -177,7 +211,12 @@ class MPERunner(Runner):
             # Obser reward and next obs
             eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(eval_actions_env)
             eval_episode_rewards.append(eval_rewards)
+            
 
+            for i in range(len(eval_obs)):
+                if random.random() < self.eval_noise_rate:
+                    eval_obs[i] = previous_eval_obs[i]
+            previous_eval_obs = eval_obs.copy()
             eval_rnn_states[eval_dones == True] = np.zeros(((eval_dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
             eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
             eval_masks[eval_dones == True] = np.zeros(((eval_dones == True).sum(), 1), dtype=np.float32)
@@ -188,6 +227,82 @@ class MPERunner(Runner):
         eval_average_episode_rewards = np.mean(eval_env_infos['eval_average_episode_rewards'])
         print("eval average episode rewards of agent: " + str(eval_average_episode_rewards))
         self.log_env(eval_env_infos, total_num_steps)
+
+    @torch.no_grad()
+    def eval_student(self, total_num_steps):
+        """Evaluate student policies independently from the teacher."""
+        if not getattr(self.trainer, "use_distillation", False):
+            return
+        if self.eval_envs is None:
+            return
+
+        eval_envs = self.eval_envs
+        eval_obs = eval_envs.reset()
+        previous_eval_obs = eval_obs.copy()
+
+        student_hidden_states = [
+            torch.zeros(
+                1,
+                self.n_eval_rollout_threads,
+                student_policy.rnn.hidden_size,
+                device=self.device
+            )
+            for student_policy in self.trainer.student_policy
+        ]
+
+        eval_episode_rewards = []
+
+        for _ in range(self.episode_length):
+            actions_per_agent = []
+            for agent_id, student_policy in enumerate(self.trainer.student_policy):
+                agent_obs = torch.as_tensor(
+                    eval_obs[:, agent_id, :],
+                    dtype=torch.float32,
+                    device=self.device
+                )
+                action_tensor, _, hidden_state = student_policy.act(
+                    agent_obs,
+                    student_hidden_states[agent_id],
+                    deterministic=True
+                )
+                student_hidden_states[agent_id] = hidden_state
+                actions_per_agent.append(action_tensor.cpu().numpy())
+
+            eval_actions = np.stack(actions_per_agent, axis=1).astype(np.int32)
+
+            if eval_envs.action_space[0].__class__.__name__ == 'MultiDiscrete':
+                raise NotImplementedError("Student evaluation does not currently support MultiDiscrete action spaces.")
+            elif eval_envs.action_space[0].__class__.__name__ == 'Discrete':
+                eval_actions_env = np.eye(eval_envs.action_space[0].n)[eval_actions]
+            else:
+                raise NotImplementedError
+
+            eval_obs, eval_rewards, eval_dones, _ = eval_envs.step(eval_actions_env)
+            eval_episode_rewards.append(eval_rewards)
+
+            for i in range(len(eval_obs)):
+                if random.random() < self.eval_noise_rate:
+                    eval_obs[i] = previous_eval_obs[i]
+            previous_eval_obs = eval_obs.copy()
+
+            for agent_id in range(self.num_agents):
+                if eval_dones.ndim == 3:
+                    agent_done_np = eval_dones[:, agent_id, 0].astype(bool)
+                else:
+                    agent_done_np = eval_dones[:, agent_id].astype(bool)
+                if agent_done_np.any():
+                    agent_done = torch.as_tensor(agent_done_np, device=self.device, dtype=torch.bool)
+                    student_hidden_states[agent_id][:, agent_done, :] = 0
+
+        eval_episode_rewards = np.array(eval_episode_rewards)
+        student_env_infos = {}
+        student_env_infos['student_eval_average_episode_rewards'] = np.sum(
+            np.array(eval_episode_rewards),
+            axis=0
+        )
+        student_eval_average = np.mean(student_env_infos['student_eval_average_episode_rewards'])
+        print("student eval average episode rewards of agent: " + str(student_eval_average))
+        self.log_env(student_env_infos, total_num_steps)
 
     @torch.no_grad()
     def render(self):

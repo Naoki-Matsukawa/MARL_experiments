@@ -52,6 +52,13 @@ class Runner(object):
         # dir
         self.model_dir = self.all_args.model_dir
 
+        # noise rate to obs
+
+        self.final_noise_rate = self.all_args.final_noise_rate if self.all_args.final_noise_rate is not None else 0.0
+        self.eval_noise_rate = self.all_args.eval_noise_rate if self.all_args.eval_noise_rate is not None else 0.0
+        self.gradual = self.all_args.gradual if self.all_args.gradual is not None else False
+        self.noise_std = self.all_args.noise_std if self.all_args.noise_std is not None else 0.0
+
         if self.use_wandb:
             self.save_dir = str(wandb.run.dir)
             self.run_dir = str(wandb.run.dir)
@@ -71,19 +78,43 @@ class Runner(object):
         print("share_obs_space: ", self.envs.share_observation_space)
         print("act_space: ", self.envs.action_space)
 
+
+        if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
+            from mat.algorithms.mat.mat_trainer import MATTrainer as TrainAlgo
+            from mat.algorithms.mat.algorithm.transformer_policy import TransformerPolicy as Policy
+        elif self.algorithm_name == "r_mappo":
+            from mat.algorithms.r_mappo.r_mappo import R_MAPPO as TrainAlgo
+            from mat.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
+        elif self.algorithm_name == "happo":
+            from mat.algorithms.happo.happo import HAPPO as TrainAlgo
+            from mat.algorithms.happo.algorithm.HAPPOPolicy import HAPPOPolicy as Policy
+        else:
+            raise NotImplementedError
         # policy network
-        self.policy = Policy(self.all_args,
-                             self.envs.observation_space[0],
-                             share_observation_space,
-                             self.envs.action_space[0],
-                             self.num_agents,
+        if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
+            self.policy = Policy(self.all_args,
+                                 self.envs.observation_space[0],
+                                 share_observation_space,
+                                 self.envs.action_space[0],
+                                 self.num_agents,
+                                 device=self.device)
+        elif self.algorithm_name == "r_mappo" or self.algorithm_name == "happo":
+            self.policy = Policy(self.all_args,
+                                 self.envs.observation_space[0],
+                                 share_observation_space,
+                                 self.envs.action_space[0],
                              device=self.device)
 
         if self.model_dir is not None:
             self.restore(self.model_dir)
 
         # algorithm
-        self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device=self.device)
+        if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
+            self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device = self.device)
+        elif self.algorithm_name == "r_mappo" or self.algorithm_name == "happo":
+            self.trainer = TrainAlgo(self.all_args, self.policy, device = self.device)
+        else:
+            raise NotImplementedError
         
         # buffer
         self.buffer = SharedReplayBuffer(self.all_args,
@@ -121,12 +152,17 @@ class Runner(object):
                                                          np.concatenate(self.buffer.obs[-1]),
                                                          np.concatenate(self.buffer.rnn_states_critic[-1]),
                                                          np.concatenate(self.buffer.masks[-1]))
-        else:
+        elif self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
             next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
                                                          np.concatenate(self.buffer.obs[-1]),
                                                          np.concatenate(self.buffer.rnn_states_critic[-1]),
                                                          np.concatenate(self.buffer.masks[-1]),
                                                          np.concatenate(self.buffer.available_actions[-1]))
+        elif self.algorithm_name == "r_mappo" or self.algorithm_name == "happo":
+            next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
+                                                         np.concatenate(self.buffer.rnn_states_critic[-1]),
+                                                         np.concatenate(self.buffer.masks[-1]))
+
         next_values = np.array(np.split(_t2n(next_values), self.n_rollout_threads))
         self.buffer.compute_returns(next_values, self.trainer.value_normalizer)
     

@@ -9,8 +9,8 @@
 #SBATCH -o dump/stdout.%J             # stdout file name. %J is the job number.
 #SBATCH -e dump/stderr.%J             # stderro file name. %J is the job number.
 
-chmod +x ../../.venv/bin/activate
-source ../../.venv/bin/activate
+# chmod +x ../../.venv/bin/activate
+# source ../../.venv/bin/activate
 
 env="MPE"
 scenario="simple_spread"  # simple_speaker_listener # simple_reference simple_spread
@@ -18,6 +18,7 @@ scenario="simple_spread"  # simple_speaker_listener # simple_reference simple_sp
 num_landmarks=3
 num_agents=10
 algo="mat"
+algo="r_mappo"
 exp="single"
 seed=1
 num_env_steps=20000000
