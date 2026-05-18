@@ -192,7 +192,7 @@ class FootballRunner(Runner):
         while True:
             self.trainer.prep_rollout()
             
-            if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
+            if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec" or self.algorithm_name == "pld":
                 eval_actions, eval_rnn_states = \
                     self.trainer.policy.act(np.concatenate(eval_share_obs),
                                             np.concatenate(eval_obs),

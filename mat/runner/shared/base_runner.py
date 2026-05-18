@@ -4,7 +4,6 @@ import numpy as np
 import torch
 from tensorboardX import SummaryWriter
 from mat.utils.shared_buffer import SharedReplayBuffer
-from mat.algorithms.mat.mat_trainer import MATTrainer as TrainAlgo
 from mat.algorithms.mat.algorithm.transformer_policy import TransformerPolicy as Policy
 
 def _t2n(x):
@@ -82,6 +81,9 @@ class Runner(object):
         if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
             from mat.algorithms.mat.mat_trainer import MATTrainer as TrainAlgo
             from mat.algorithms.mat.algorithm.transformer_policy import TransformerPolicy as Policy
+        elif self.algorithm_name == "pld":
+            from mat.algorithms.PLD.pld_trainer import PLDTrainer as TrainAlgo
+            from mat.algorithms.PLD.pld_policy import PLDPolicy as Policy
         elif self.algorithm_name == "r_mappo":
             from mat.algorithms.r_mappo.r_mappo import R_MAPPO as TrainAlgo
             from mat.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
@@ -98,6 +100,13 @@ class Runner(object):
                                  self.envs.action_space[0],
                                  self.num_agents,
                                  device=self.device)
+        elif self.algorithm_name == "pld":
+            self.policy = Policy(self.all_args,
+                                 self.envs.observation_space[0],
+                                 share_observation_space,
+                                 self.envs.action_space[0],
+                                 self.num_agents,
+                                 device=self.device)
         elif self.algorithm_name == "r_mappo" or self.algorithm_name == "happo":
             self.policy = Policy(self.all_args,
                                  self.envs.observation_space[0],
@@ -108,8 +117,14 @@ class Runner(object):
         if self.model_dir is not None:
             self.restore(self.model_dir)
 
+        if self.algorithm_name == "pld":
+            self.all_args.use_valuenorm = False
+            self.all_args.use_popart = False
+
         # algorithm
         if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
+            self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device = self.device)
+        elif self.algorithm_name == "pld":
             self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device = self.device)
         elif self.algorithm_name == "r_mappo" or self.algorithm_name == "happo":
             self.trainer = TrainAlgo(self.all_args, self.policy, device = self.device)
@@ -152,7 +167,7 @@ class Runner(object):
                                                          np.concatenate(self.buffer.obs[-1]),
                                                          np.concatenate(self.buffer.rnn_states_critic[-1]),
                                                          np.concatenate(self.buffer.masks[-1]))
-        elif self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
+        elif self.algorithm_name == "mat" or self.algorithm_name == "mat_dec" or self.algorithm_name == "pld":
             next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
                                                          np.concatenate(self.buffer.obs[-1]),
                                                          np.concatenate(self.buffer.rnn_states_critic[-1]),

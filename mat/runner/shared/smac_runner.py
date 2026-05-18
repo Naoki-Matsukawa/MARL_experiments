@@ -6,6 +6,7 @@ import torch
 from mat.runner.shared.base_runner import Runner
 import random
 import copy
+import os
 def _t2n(x):
     return x.detach().cpu().numpy()
 
@@ -13,10 +14,49 @@ class SMACRunner(Runner):
     """Runner class to perform training, evaluation. and data collection for SMAC. See parent class for details."""
     def __init__(self, config):
         super(SMACRunner, self).__init__(config)
+        self.rollout_save_interval = 1
+        self._rollout_cache = []
+        self._rollout_chunk_idx = 0
+        self.collect_eval_rollouts = getattr(self.all_args, "collect_eval_rollouts", False)
+        self._eval_rollout_idx = 0
 
     def run2(self):
-        for episode in range(1):
-            self.eval(episode)
+        eval_runs = getattr(self.all_args, "eval_runs", 100)
+        if self.collect_eval_rollouts and eval_runs > 1:
+            original_eval_episodes = self.all_args.eval_episodes
+            self.all_args.eval_episodes = original_eval_episodes * eval_runs
+            self.eval(0)
+            self.all_args.eval_episodes = original_eval_episodes
+            return
+        for _ in range(eval_runs):
+            self.eval(0)
+
+
+class PLDSMACHRunner(SMACRunner):
+    """Offline PLD training runner using dataset rollouts; env interaction only for eval."""
+    def run(self):
+        start = time.time()
+        updates = self.all_args.pld_updates
+
+        for update in range(updates):
+            train_infos = self.train()
+            total_num_steps = update + 1
+
+            if update % self.log_interval == 0:
+                end = time.time()
+                print("\n PLD updates {}/{} total, elapsed {:.2f}s.\n"
+                      .format(update, updates, end - start))
+                self.log_train(train_infos, total_num_steps)
+
+            if update % self.eval_interval == 0 and self.use_eval:
+                self.eval(total_num_steps)
+
+    def log_train(self, train_infos, total_num_steps):
+        for k, v in train_infos.items():
+            if self.use_wandb:
+                wandb.log({k: v}, step=total_num_steps)
+            else:
+                self.writter.add_scalars(k, {k: v}, total_num_steps)
 
     def run(self):
         self.warmup()
@@ -94,6 +134,7 @@ class SMACRunner(Runner):
 
             # compute return and update network
             self.compute()
+            self.dump_rollout_npz(total_num_steps, episode)
             train_infos = self.train()
             
             # post process
@@ -216,6 +257,80 @@ class SMACRunner(Runner):
                 wandb.log({k: v}, step=total_num_steps)
             else:
                 self.writter.add_scalars(k, {k: v}, total_num_steps)
+
+    @torch.no_grad()
+    def dump_rollout_npz(self, total_num_steps, episode):
+        rollout_dir = os.path.join(str(self.run_dir), "rollouts")
+        os.makedirs(rollout_dir, exist_ok=True)
+
+        buffer = self.buffer
+        data = {
+            "obs": buffer.obs[:-1],
+            "share_obs": buffer.share_obs[:-1],
+            "actions": buffer.actions,
+            "action_log_probs": buffer.action_log_probs,
+            "values": buffer.value_preds[:-1],
+            "rewards": buffer.rewards,
+            "returns": buffer.returns[:-1],
+            "advantages": buffer.advantages,
+            "masks": buffer.masks[:-1],
+            "masks_next": buffer.masks[1:],
+            "active_masks": buffer.active_masks[1:],
+            "bad_masks": buffer.bad_masks[1:],
+            "rnn_states": buffer.rnn_states[:-1],
+            "rnn_states_critic": buffer.rnn_states_critic[:-1],
+        }
+
+        if buffer.available_actions is not None:
+            data["available_actions"] = buffer.available_actions[:-1]
+
+        if self.algorithm_name in ["mat", "mat_dec"] and self.trainer.policy.action_type == "Discrete":
+            obs = buffer.obs[:-1].reshape(-1, self.num_agents, *buffer.obs.shape[3:])
+            actions = buffer.actions.reshape(-1, self.num_agents, *buffer.actions.shape[3:])
+            available_actions = None
+            if buffer.available_actions is not None:
+                available_actions = buffer.available_actions[:-1].reshape(
+                    -1, self.num_agents, buffer.available_actions.shape[-1]
+                )
+            logits = self.trainer.policy.transformer.compute_discrete_logits(
+                obs, actions, available_actions
+            )
+            logits = _t2n(logits).reshape(
+                buffer.actions.shape[0],
+                self.n_rollout_threads,
+                self.num_agents,
+                -1
+            )
+            data["action_logits"] = logits
+
+        self._rollout_cache.append(data)
+        if len(self._rollout_cache) < self.rollout_save_interval:
+            return
+
+        chunk = self._rollout_cache
+        stacked = {}
+        for key in chunk[0].keys():
+            stacked[key] = np.stack([c[key] for c in chunk], axis=0)
+
+        file_path = os.path.join(
+            rollout_dir,
+            f"smac_rollout_chunk_{self._rollout_chunk_idx}_steps_{total_num_steps}.npz"
+        )
+        np.savez_compressed(file_path, **stacked)
+        self._rollout_cache = []
+        self._rollout_chunk_idx += 1
+
+    def _compute_gae(self, rewards, values, masks_next, next_value):
+        advantages = np.zeros_like(rewards)
+        returns = np.zeros_like(rewards)
+        gae = 0
+        for step in reversed(range(rewards.shape[0])):
+            delta = rewards[step] + self.all_args.gamma * next_value * masks_next[step] - values[step]
+            gae = delta + self.all_args.gamma * self.all_args.gae_lambda * masks_next[step] * gae
+            advantages[step] = gae
+            returns[step] = gae + values[step]
+            next_value = values[step]
+        return advantages, returns
     
     @torch.no_grad()
     def eval(self, total_num_steps):
@@ -230,6 +345,19 @@ class SMACRunner(Runner):
         eval_rnn_states = np.zeros((self.n_eval_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
         eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
 
+        if self.collect_eval_rollouts and self.algorithm_name not in ["mat", "mat_dec"]:
+            raise NotImplementedError("eval rollout collection is only supported for MAT.")
+
+        eval_obs_list = []
+        eval_share_obs_list = []
+        eval_actions_list = []
+        eval_action_log_probs_list = []
+        eval_values_list = []
+        eval_rewards_list = []
+        eval_dones_list = []
+        eval_masks_next_list = []
+        eval_available_actions_list = []
+
         while True:
             eval_obs_for_policy = eval_obs
             if self.noise_std > 0:
@@ -240,14 +368,30 @@ class SMACRunner(Runner):
                 eval_obs_for_policy = eval_obs + noise
                 
             self.trainer.prep_rollout()
-            if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
-                eval_actions, eval_rnn_states = \
-                    self.trainer.policy.act(np.concatenate(eval_share_obs),
-                                            np.concatenate(eval_obs_for_policy),
-                                            np.concatenate(eval_rnn_states),
-                                            np.concatenate(eval_masks),
-                                            np.concatenate(eval_available_actions),
-                                            deterministic=True)
+            if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec" or self.algorithm_name == "pld":
+                if self.collect_eval_rollouts:
+                    eval_values, eval_actions, eval_action_log_probs, eval_rnn_states, _ = \
+                        self.trainer.policy.get_actions(np.concatenate(eval_share_obs),
+                                                        np.concatenate(eval_obs_for_policy),
+                                                        np.concatenate(eval_rnn_states),
+                                                        np.concatenate(eval_rnn_states),
+                                                        np.concatenate(eval_masks),
+                                                        np.concatenate(eval_available_actions),
+                                                        deterministic=True)
+                    eval_values = np.array(np.split(_t2n(eval_values), self.n_eval_rollout_threads))
+                    eval_action_log_probs = np.array(np.split(_t2n(eval_action_log_probs), self.n_eval_rollout_threads))
+                    eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
+                    eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
+                else:
+                    eval_actions, eval_rnn_states = \
+                        self.trainer.policy.act(np.concatenate(eval_share_obs),
+                                                np.concatenate(eval_obs_for_policy),
+                                                np.concatenate(eval_rnn_states),
+                                                np.concatenate(eval_masks),
+                                                np.concatenate(eval_available_actions),
+                                                deterministic=True)
+                    eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
+                    eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
             elif self.algorithm_name == "r_mappo":
                 eval_actions, eval_rnn_states = \
                     self.trainer.policy.act(np.concatenate(eval_obs_for_policy),
@@ -255,10 +399,10 @@ class SMACRunner(Runner):
                                             np.concatenate(eval_masks),
                                             np.concatenate(eval_available_actions),
                                             deterministic=True)
+                eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
+                eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
             else:
                 raise NotImplementedError
-            eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
-            eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
             
             for i in range(len(eval_actions)):
                 for j in range(len(eval_actions[i])):
@@ -266,6 +410,13 @@ class SMACRunner(Runner):
                         valid = np.nonzero(eval_available_actions[i][j])[0]
                         eval_actions[i][j] = valid[0] if len(valid) > 0 else 0
         
+            if self.collect_eval_rollouts:
+                eval_obs_list.append(eval_obs.copy())
+                eval_share_obs_list.append(eval_share_obs.copy())
+                eval_available_actions_list.append(eval_available_actions.copy())
+                eval_actions_list.append(eval_actions.copy())
+                eval_action_log_probs_list.append(eval_action_log_probs.copy())
+                eval_values_list.append(eval_values.copy())
             
             # Obser reward and next obs
             eval_obs, eval_share_obs, eval_rewards, eval_dones, eval_infos, eval_available_actions = self.eval_envs.step(eval_actions)
@@ -286,6 +437,11 @@ class SMACRunner(Runner):
             eval_masks = np.ones((self.all_args.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
             eval_masks[eval_dones_env == True] = np.zeros(((eval_dones_env == True).sum(), self.num_agents, 1), dtype=np.float32)
 
+            if self.collect_eval_rollouts:
+                eval_rewards_list.append(eval_rewards.copy())
+                eval_dones_list.append(eval_dones.copy())
+                eval_masks_next_list.append(eval_masks.copy())
+
             for eval_i in range(self.n_eval_rollout_threads):
                 if eval_dones_env[eval_i]:
                     eval_episode += 1
@@ -295,6 +451,63 @@ class SMACRunner(Runner):
                         eval_battles_won += 1
 
             if eval_episode >= self.all_args.eval_episodes:
+                if self.collect_eval_rollouts:
+                    rollout_dir = os.path.join(str(self.run_dir), "rollouts")
+                    os.makedirs(rollout_dir, exist_ok=True)
+
+                    obs_arr = np.stack(eval_obs_list, axis=0)
+                    share_obs_arr = np.stack(eval_share_obs_list, axis=0)
+                    actions_arr = np.stack(eval_actions_list, axis=0)
+                    action_log_probs_arr = np.stack(eval_action_log_probs_list, axis=0)
+                    values_arr = np.stack(eval_values_list, axis=0)
+                    rewards_arr = np.stack(eval_rewards_list, axis=0)
+                    dones_arr = np.stack(eval_dones_list, axis=0)
+                    masks_next_arr = np.stack(eval_masks_next_list, axis=0)
+                    available_actions_arr = np.stack(eval_available_actions_list, axis=0)
+
+                    next_value = self.trainer.policy.get_values(np.concatenate(eval_share_obs),
+                                                                np.concatenate(eval_obs),
+                                                                np.concatenate(eval_rnn_states),
+                                                                np.concatenate(eval_masks),
+                                                                np.concatenate(eval_available_actions))
+                    next_value = np.array(np.split(_t2n(next_value), self.n_eval_rollout_threads))
+                    advantages, returns = self._compute_gae(rewards_arr, values_arr, masks_next_arr, next_value)
+
+                    data = {
+                        "obs": obs_arr,
+                        "share_obs": share_obs_arr,
+                        "actions": actions_arr,
+                        "action_log_probs": action_log_probs_arr,
+                        "values": values_arr,
+                        "rewards": rewards_arr,
+                        "dones": dones_arr,
+                        "masks_next": masks_next_arr,
+                        "advantages": advantages,
+                        "returns": returns,
+                        "available_actions": available_actions_arr,
+                    }
+
+                    if self.trainer.policy.action_type == "Discrete":
+                        logits = self.trainer.policy.transformer.compute_discrete_logits(
+                            obs_arr.reshape(-1, self.num_agents, obs_arr.shape[-1]),
+                            actions_arr.reshape(-1, self.num_agents, actions_arr.shape[-1]),
+                            available_actions_arr.reshape(-1, self.num_agents, available_actions_arr.shape[-1])
+                        )
+                        logits = _t2n(logits).reshape(
+                            obs_arr.shape[0],
+                            self.n_eval_rollout_threads,
+                            self.num_agents,
+                            -1
+                        )
+                        data["action_logits"] = logits
+
+                    file_path = os.path.join(
+                        rollout_dir,
+                        f"smac_eval_rollout_{self._eval_rollout_idx}_steps_{total_num_steps}.npz"
+                    )
+                    np.savez_compressed(file_path, **data)
+                    self._eval_rollout_idx += 1
+
                 # self.eval_envs.save_replay()
                 eval_episode_rewards = np.array(eval_episode_rewards)
                 eval_env_infos = {'eval_average_episode_rewards': eval_episode_rewards}                

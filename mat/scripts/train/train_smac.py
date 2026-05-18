@@ -14,6 +14,7 @@ from mat.envs.starcraft2.Random_StarCraft2_Env import RandomStarCraft2Env
 from mat.envs.starcraft2.smac_maps import get_map_params
 from mat.envs.env_wrappers import ShareSubprocVecEnv, ShareDummyVecEnv
 from mat.runner.shared.smac_runner import SMACRunner as Runner
+from mat.runner.shared.smac_runner import PLDSMACHRunner
 
 """Train script for SMAC."""
 
@@ -89,6 +90,9 @@ def main(args):
     if all_args.algorithm_name == "mat_dec":
         all_args.dec_actor = True
         all_args.share_actor = True
+    if all_args.model_dir is not None:
+        all_args.use_eval = True
+        all_args.collect_eval_rollouts = True
 
     # cuda
     if all_args.cuda and torch.cuda.is_available():
@@ -159,8 +163,12 @@ def main(args):
         "run_dir": run_dir
     }
 
-    runner = Runner(config)
-    runner.run()
+    runner_cls = PLDSMACHRunner if all_args.algorithm_name == "pld" else Runner
+    runner = runner_cls(config)
+    if all_args.model_dir is not None:
+        runner.run2()
+    else:
+        runner.run()
 
     # post process
     envs.close()

@@ -21,6 +21,7 @@ class FootballEnv(MultiAgentEnv):
                                                    number_of_left_players_agent_controls=self.n_agents,
                                                    representation="raw",
                                                    # representation="simple115v2",
+                                                   render=False,
                                                    rewards=self.reward_type)
         self.feature_encoder = FeatureEncoder()
         self.reward_encoder = Rewarder()
