@@ -1,0 +1,37 @@
+defaults:
+  cwd: mat/scripts
+  python: python
+  script: train/train_smac.py
+  cuda_visible_devices: auto
+  parallel: true
+  args:
+    env_name: StarCraft2
+    algorithm_name: mat
+    experiment_name: single
+    map_name: 3s5z_vs_3s6z
+    n_training_threads: 16
+    n_rollout_threads: 32
+    num_mini_batch: 1
+    episode_length: 100
+    num_env_steps: 30000000
+    lr: 5e-4
+    ppo_epoch: 5
+    clip_param: 0.05
+    save_interval: 100000
+    gain: 0.01
+    entropy_coef: 0.01
+    gamma: 0.99
+    use_value_active_masks: true
+    use_eval: true
+    distillation: true
+    user_name: matsukawa-naoki555-university-of-tokyo
+    student_kl_coef: 1.0
+    student_rl_coef: 1.0
+    student_rl_linear_schedule: true
+    student_rl_coef_start: 0.0
+    max_grad_norm: 5
+    noise_std: 0
+
+runs:
+  - name: smac_distillation
+    seeds: [1, 2]

@@ -4,6 +4,8 @@ from __future__ import print_function
 
 from .multiagentenv import MultiAgentEnv
 from .smac_maps import get_map_params
+from .debug_render import render_smac_topdown
+from .randomization import randomize_enemy_positions
 
 import atexit
 from operator import attrgetter
@@ -213,6 +215,13 @@ class StarCraft2Env(MultiAgentEnv):
         self.add_center_xy = args.add_center_xy
         self.use_stacked_frames = args.use_stacked_frames
         self.stacked_frames = args.stacked_frames
+        self.debug_render_show_sight = getattr(args, "debug_render_show_sight", False)
+        self.sight_range = getattr(args, "sight_range", 9.0)
+        self.mask_attack_by_sight = getattr(args, "mask_attack_by_sight", False)
+        self.randomize_enemy_position = getattr(args, "randomize_enemy_position", False)
+        self.enemy_position_jitter = getattr(args, "enemy_position_jitter", 0.0)
+        self.enemy_position_jitter_mode = getattr(args, "enemy_position_jitter_mode", "group")
+        self.enemy_position_jitter_attempts = getattr(args, "enemy_position_jitter_attempts", 20)
         
         map_params = get_map_params(self.map_name)
         self.n_agents = map_params["n_agents"]
@@ -261,9 +270,10 @@ class StarCraft2Env(MultiAgentEnv):
         self.heuristic_rest = heuristic_rest
         self.debug = debug
         self.window_size = (window_size_x, window_size_y)
-        self.replay_dir = replay_dir
+        self.save_replay_enabled = getattr(args, "save_replay", False)
+        self.replay_dir = getattr(args, "replay_dir", replay_dir)
         # self.replay_dir = args.run_dir / 'replay'
-        self.replay_prefix = replay_prefix
+        self.replay_prefix = getattr(args, "replay_prefix", replay_prefix)
 
         # Actions
         self.n_actions_no_attack = 6
@@ -419,6 +429,7 @@ class StarCraft2Env(MultiAgentEnv):
         try:
             self._obs = self._controller.observe()
             self.init_units()
+            randomize_enemy_positions(self)
         except (protocol.ProtocolError, protocol.ConnectionError):
             self.full_restart()
 
@@ -915,7 +926,7 @@ class StarCraft2Env(MultiAgentEnv):
 
     def unit_sight_range(self, agent_id):
         """Returns the sight range for an agent."""
-        return 9
+        return self.sight_range
 
     def unit_max_cooldown(self, unit):
         """Returns the maximal cooldown for a unit."""
@@ -1865,6 +1876,8 @@ class StarCraft2Env(MultiAgentEnv):
 
             # Can attack only alive units that are alive in the shooting range
             shoot_range = self.unit_shoot_range(agent_id)
+            if self.mask_attack_by_sight:
+                shoot_range = min(shoot_range, self.unit_sight_range(agent_id))
 
             target_items = self.enemies.items()
             if self.map_type == "MMM" and unit.unit_type == self.medivac_id:
@@ -1906,9 +1919,16 @@ class StarCraft2Env(MultiAgentEnv):
         """Returns the random seed used by the environment."""
         self._seed = seed
 
-    def render(self):
-        """Not implemented."""
-        pass
+    def render(self, mode="human"):
+        """Render a headless top-down RGB view from raw unit positions."""
+        if mode == "rgb_array":
+            return render_smac_topdown(
+                self,
+                show_sight=getattr(self, "debug_render_show_sight", False),
+            )
+        if mode == "human":
+            return None
+        raise NotImplementedError
 
     def _kill_all_units(self):
         """Kill all units on the map."""

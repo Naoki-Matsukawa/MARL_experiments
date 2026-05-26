@@ -219,6 +219,13 @@ class GuardSubprocVecEnv(ShareVecEnv):
             remote.send(('reset_task', None))
         return np.stack([remote.recv() for remote in self.remotes])
 
+    def render(self, mode="rgb_array"):
+        for remote in self.remotes:
+            remote.send(('render', mode))
+        if mode == "rgb_array":
+            frame = [remote.recv() for remote in self.remotes]
+            return np.stack(frame)
+
     def close(self):
         if self.closed:
             return
@@ -276,6 +283,13 @@ class SubprocVecEnv(ShareVecEnv):
         for remote in self.remotes:
             remote.send(('reset_task', None))
         return np.stack([remote.recv() for remote in self.remotes])
+
+    def render(self, mode="rgb_array"):
+        for remote in self.remotes:
+            remote.send(('render', mode))
+        if mode == "rgb_array":
+            frame = [remote.recv() for remote in self.remotes]
+            return np.stack(frame)
 
     def close(self):
         if self.closed:
@@ -386,6 +400,13 @@ class ShareSubprocVecEnv(ShareVecEnv):
         for remote in self.remotes:
             remote.send(('reset_task', None))
         return np.stack([remote.recv() for remote in self.remotes])
+
+    def render(self, mode="rgb_array"):
+        for remote in self.remotes:
+            remote.send(('render', mode))
+        if mode == "rgb_array":
+            frame = [remote.recv() for remote in self.remotes]
+            return np.stack(frame)
 
     def close(self):
         if self.closed:

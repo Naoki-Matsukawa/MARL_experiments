@@ -1,0 +1,28 @@
+defaults:
+  cwd: mat/scripts
+  python: python
+  script: train/train_smac.py
+  cuda_visible_devices: auto
+  args:
+    env_name: StarCraft2
+    algorithm_name: pld
+    experiment_name: pld_offline
+    map_name: 3s5z_vs_3s6z
+    n_training_threads: 16
+    n_rollout_threads: 1
+    n_eval_rollout_threads: 1
+    num_mini_batch: 1
+    episode_length: 100
+    num_env_steps: 10000000
+    use_value_active_masks: true
+    use_eval: true
+    user_name: matsukawa-naoki555-university-of-tokyo
+    pld_dataset_dir: /home/mil/matsukawa/Multi-Agent-Transformer/mat/algorithms/PLD/dataset
+    pld_updates: 50
+    pld_vae_path: /home/mil/matsukawa/Multi-Agent-Transformer/mat/algorithms/PLD/vae_ckpt.pt
+    pld_freeze_vae: true
+    pld_disable_obs_encoder: true
+
+runs:
+  - name: smac_pld
+    seeds: [1]

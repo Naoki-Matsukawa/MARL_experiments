@@ -1,0 +1,196 @@
+base:
+  cwd: mat/scripts
+  python: python
+  cuda_visible_devices: "0"
+  args:
+    n_training_threads: 16
+    num_mini_batch: 1
+    episode_length: 100
+    lr: 5e-4
+    use_value_active_masks: true
+    use_eval: true
+    user_name: matsukawa-naoki555-university-of-tokyo
+
+presets:
+  smac_single:
+    script: train/train_smac.py
+    args:
+      env_name: StarCraft2
+      n_rollout_threads: 32
+
+  smac_multi:
+    script: train/train_smac_multi.py
+    args:
+      env_name: StarCraft2_multi
+
+  mat:
+    args:
+      algorithm_name: mat
+      ppo_epoch: 10
+      clip_param: 0.05
+
+  partial_obs:
+    args:
+      sight_range: 7
+      mask_attack_by_sight: true
+
+  enemy_group_jitter:
+    args:
+      randomize_enemy_position: true
+      enemy_position_jitter: 1.5
+      enemy_position_jitter_mode: group
+      enemy_position_jitter_attempts: 20
+
+  headless_debug_render:
+    args:
+      save_debug_render: true
+      debug_render_format: gif
+      debug_render_episodes: 3
+      debug_render_interval: 1
+      debug_render_fps: 8
+      debug_render_show_sight: true
+      debug_render_dir: "debug_renders/{name}_seed{seed}"
+
+  sc2_replay:
+    args:
+      save_replay: true
+      replay_dir: "replays/{name}_seed{seed}"
+      replay_prefix: "{name}_seed{seed}"
+
+  pld:
+    script: train/train_smac.py
+    cuda_visible_devices: auto
+    args:
+      env_name: StarCraft2
+      algorithm_name: pld
+      n_rollout_threads: 1
+      n_eval_rollout_threads: 1
+
+  distillation:
+    script: train/train_smac.py
+    cuda_visible_devices: auto
+    parallel: true
+    args:
+      env_name: StarCraft2
+      algorithm_name: mat
+      n_rollout_threads: 32
+      ppo_epoch: 5
+      clip_param: 0.05
+      gain: 0.01
+      entropy_coef: 0.01
+      gamma: 0.99
+      distillation: true
+      student_kl_coef: 1.0
+      student_rl_coef: 1.0
+      student_rl_linear_schedule: true
+      student_rl_coef_start: 0.0
+      max_grad_norm: 5
+      noise_std: 0
+
+runs:
+  - name: smac_single
+    use: [smac_single, mat]
+    seeds: [1]
+    args:
+      experiment_name: single
+      map_name: 6h_vs_8z
+      num_env_steps: 10000000
+      ppo_epoch: 15
+      clip_param: 0.05
+      save_interval: 100000
+      eval_noise_rate: 0
+      final_noise_rate: 0
+
+  - name: smac_multi
+    use: [smac_multi, mat]
+    seeds: [1]
+    args:
+      experiment_name: multi_task
+      train_maps:
+        - 3s_vs_3z
+        - 3s_vs_4z
+        - 3m
+        - MMM
+        - 3s5z
+        - 8m_vs_9m
+        - 25m
+        - 10m_vs_11m
+        - 2s3z
+      eval_maps:
+        - 3s_vs_3z
+        - 3s_vs_4z
+        - 3m
+        - MMM
+        - 3s5z
+        - 8m_vs_9m
+        - 25m
+        - 10m_vs_11m
+        - 2s3z
+      n_eval_rollout_threads: 36
+      n_rollout_threads: 36
+      num_env_steps: 10000000
+
+  - name: smac_few_shot
+    use: [smac_multi, mat]
+    seeds: [1]
+    matrix:
+      train_maps:
+        - 27m_vs_30m
+        - 8m
+        - 5m_vs_6m
+        - MMM2
+        - 1c3s5z
+        - 2s_vs_1sc
+    args:
+      experiment_name: "from_scratch_{train_maps}"
+      train_maps: "{train_maps}"
+      eval_maps: "{train_maps}"
+      n_eval_rollout_threads: 16
+      n_rollout_threads: 32
+      eval_interval: 5
+      num_env_steps: 1000000
+
+  - name: smac_pld
+    use: [pld]
+    seeds: [1]
+    args:
+      experiment_name: pld_offline
+      map_name: 3s5z_vs_3s6z
+      num_env_steps: 10000000
+      pld_dataset_dir: /home/mil/matsukawa/Multi-Agent-Transformer/mat/algorithms/PLD/dataset
+      pld_updates: 50
+      pld_vae_path: /home/mil/matsukawa/Multi-Agent-Transformer/mat/algorithms/PLD/vae_ckpt.pt
+      pld_freeze_vae: true
+      pld_disable_obs_encoder: true
+
+  - name: smac_distillation
+    use: [distillation]
+    seeds: [1, 2]
+    args:
+      experiment_name: single
+      map_name: 3s5z_vs_3s6z
+      num_env_steps: 30000000
+      save_interval: 100000
+
+  - name: partial_enemy_jitter
+    use: [smac_single, mat, partial_obs, enemy_group_jitter]
+    seeds: [1, 2, 3]
+    matrix:
+      sight_range: [9, 7, 5]
+      enemy_position_jitter: [0.0, 1.5]
+    args:
+      experiment_name: "partial_sight{sight_range}_ejitter{enemy_position_jitter}"
+      map_name: 3s5z_vs_3s6z
+      num_env_steps: 30000000
+      save_interval: 100000
+
+  - name: inspect_enemy_jitter
+    use: [smac_single, mat, partial_obs, enemy_group_jitter, headless_debug_render]
+    seeds: [1]
+    args:
+      experiment_name: inspect_enemy_jitter
+      map_name: 3s5z_vs_3s6z
+      num_env_steps: 100000
+      n_rollout_threads: 1
+      n_eval_rollout_threads: 1
+      eval_episodes: 3

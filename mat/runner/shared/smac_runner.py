@@ -7,6 +7,7 @@ from mat.runner.shared.base_runner import Runner
 import random
 import copy
 import os
+import imageio
 def _t2n(x):
     return x.detach().cpu().numpy()
 
@@ -30,33 +31,6 @@ class SMACRunner(Runner):
             return
         for _ in range(eval_runs):
             self.eval(0)
-
-
-class PLDSMACHRunner(SMACRunner):
-    """Offline PLD training runner using dataset rollouts; env interaction only for eval."""
-    def run(self):
-        start = time.time()
-        updates = self.all_args.pld_updates
-
-        for update in range(updates):
-            train_infos = self.train()
-            total_num_steps = update + 1
-
-            if update % self.log_interval == 0:
-                end = time.time()
-                print("\n PLD updates {}/{} total, elapsed {:.2f}s.\n"
-                      .format(update, updates, end - start))
-                self.log_train(train_infos, total_num_steps)
-
-            if update % self.eval_interval == 0 and self.use_eval:
-                self.eval(total_num_steps)
-
-    def log_train(self, train_infos, total_num_steps):
-        for k, v in train_infos.items():
-            if self.use_wandb:
-                wandb.log({k: v}, step=total_num_steps)
-            else:
-                self.writter.add_scalars(k, {k: v}, total_num_steps)
 
     def run(self):
         self.warmup()
@@ -134,7 +108,8 @@ class PLDSMACHRunner(SMACRunner):
 
             # compute return and update network
             self.compute()
-            self.dump_rollout_npz(total_num_steps, episode)
+            if getattr(self.all_args, "save_train_rollouts", False):
+                self.dump_rollout_npz(total_num_steps, episode)
             train_infos = self.train()
             
             # post process
@@ -331,6 +306,35 @@ class PLDSMACHRunner(SMACRunner):
             returns[step] = gae + values[step]
             next_value = values[step]
         return advantages, returns
+
+    def _debug_render_path(self, total_num_steps):
+        render_dir = getattr(self.all_args, "debug_render_dir", "debug_renders")
+        if not os.path.isabs(render_dir):
+            render_dir = os.path.join(str(self.run_dir), render_dir)
+        os.makedirs(render_dir, exist_ok=True)
+        filename = "eval_steps_{}.gif".format(total_num_steps)
+        return os.path.join(render_dir, filename)
+
+    def _capture_debug_frame(self):
+        frames = self.eval_envs.render("rgb_array")
+        frames = np.asarray(frames)
+        if frames.ndim == 5:
+            return frames[0, 0]
+        if frames.ndim == 4:
+            return frames[0]
+        if frames.ndim == 3:
+            return frames
+        raise ValueError("Unexpected debug render frame shape: {}".format(frames.shape))
+
+    def _save_debug_render(self, frames, total_num_steps):
+        if len(frames) == 0:
+            return
+        fps = max(int(getattr(self.all_args, "debug_render_fps", 8)), 1)
+        path = self._debug_render_path(total_num_steps)
+        imageio.mimsave(path, frames, duration=1.0 / fps)
+        print("debug render saved at {}.".format(path))
+        if self.use_wandb:
+            wandb.save(path)
     
     @torch.no_grad()
     def eval(self, total_num_steps):
@@ -344,6 +348,14 @@ class PLDSMACHRunner(SMACRunner):
 
         eval_rnn_states = np.zeros((self.n_eval_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
         eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
+        save_debug_render = getattr(self.all_args, "save_debug_render", False)
+        debug_render_frames = []
+        debug_render_step = 0
+        debug_render_done = False
+        debug_render_episode_limit = max(int(getattr(self.all_args, "debug_render_episodes", 1)), 0)
+        debug_render_interval = max(int(getattr(self.all_args, "debug_render_interval", 1)), 1)
+        if save_debug_render and debug_render_episode_limit > 0:
+            debug_render_frames.append(self._capture_debug_frame())
 
         if self.collect_eval_rollouts and self.algorithm_name not in ["mat", "mat_dec"]:
             raise NotImplementedError("eval rollout collection is only supported for MAT.")
@@ -421,6 +433,14 @@ class PLDSMACHRunner(SMACRunner):
             # Obser reward and next obs
             eval_obs, eval_share_obs, eval_rewards, eval_dones, eval_infos, eval_available_actions = self.eval_envs.step(eval_actions)
             one_episode_rewards.append(eval_rewards)
+            debug_render_step += 1
+            if (
+                save_debug_render
+                and not debug_render_done
+                and debug_render_episode_limit > 0
+                and debug_render_step % debug_render_interval == 0
+            ):
+                debug_render_frames.append(self._capture_debug_frame())
 
             
 
@@ -449,8 +469,12 @@ class PLDSMACHRunner(SMACRunner):
                     one_episode_rewards = []
                     if eval_infos[eval_i][0]['won']:
                         eval_battles_won += 1
+                    if save_debug_render and eval_episode >= debug_render_episode_limit:
+                        debug_render_done = True
 
             if eval_episode >= self.all_args.eval_episodes:
+                if save_debug_render:
+                    self._save_debug_render(debug_render_frames, total_num_steps)
                 if self.collect_eval_rollouts:
                     rollout_dir = os.path.join(str(self.run_dir), "rollouts")
                     os.makedirs(rollout_dir, exist_ok=True)
@@ -508,7 +532,8 @@ class PLDSMACHRunner(SMACRunner):
                     np.savez_compressed(file_path, **data)
                     self._eval_rollout_idx += 1
 
-                # self.eval_envs.save_replay()
+                if getattr(self.all_args, "save_replay", False):
+                    self.eval_envs.save_replay()
                 eval_episode_rewards = np.array(eval_episode_rewards)
                 eval_env_infos = {'eval_average_episode_rewards': eval_episode_rewards}                
                 self.log_env(eval_env_infos, total_num_steps)
@@ -608,3 +633,30 @@ class PLDSMACHRunner(SMACRunner):
                 else:
                     self.writter.add_scalars("student_eval_win_rate", {"student_eval_win_rate": student_win_rate}, total_num_steps)
                 break
+
+
+class PLDSMACHRunner(SMACRunner):
+    """Offline PLD training runner using dataset rollouts; env interaction only for eval."""
+    def run(self):
+        start = time.time()
+        updates = self.all_args.pld_updates
+
+        for update in range(updates):
+            train_infos = self.train()
+            total_num_steps = update + 1
+
+            if update % self.log_interval == 0:
+                end = time.time()
+                print("\n PLD updates {}/{} total, elapsed {:.2f}s.\n"
+                      .format(update, updates, end - start))
+                self.log_train(train_infos, total_num_steps)
+
+            if update % self.eval_interval == 0 and self.use_eval:
+                self.eval(total_num_steps)
+
+    def log_train(self, train_infos, total_num_steps):
+        for k, v in train_infos.items():
+            if self.use_wandb:
+                wandb.log({k: v}, step=total_num_steps)
+            else:
+                self.writter.add_scalars(k, {k: v}, total_num_steps)

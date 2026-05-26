@@ -189,6 +189,18 @@ def get_config():
     parser.add_argument("--env_name", type=str, default='StarCraft2', help="specify the name of environment")
     parser.add_argument("--use_obs_instead_of_state", action='store_true',
                         default=False, help="Whether to use global state or concatenated obs")
+    parser.add_argument("--sight_range", type=float, default=9.0,
+                        help="Local observation sight range for SMAC-style environments.")
+    parser.add_argument("--mask_attack_by_sight", action='store_true', default=False,
+                        help="Limit SMAC attack availability by sight range as well as shooting range.")
+    parser.add_argument("--randomize_enemy_position", action='store_true', default=False,
+                        help="Randomize initial enemy positions in supported SMAC environments.")
+    parser.add_argument("--enemy_position_jitter", type=float, default=0.0,
+                        help="Maximum initial enemy position jitter radius.")
+    parser.add_argument("--enemy_position_jitter_mode", type=str, default="group", choices=["group", "unit"],
+                        help="Enemy jitter mode: group translates all enemies together; unit jitters each enemy.")
+    parser.add_argument("--enemy_position_jitter_attempts", type=int, default=20,
+                        help="Number of attempts to sample valid enemy jitter positions.")
 
     # replay buffer parameters
     parser.add_argument("--episode_length", type=int,
@@ -314,6 +326,26 @@ def get_config():
     parser.add_argument("--use_render", action='store_true', default=False, help="by default, do not render the env during training. If set, start render. Note: something, the environment has internal render process which is not controlled by this hyperparam.")
     parser.add_argument("--render_episodes", type=int, default=5, help="the number of episodes to render a given env")
     parser.add_argument("--ifi", type=float, default=0.1, help="the play interval of each rendered image in saved video.")
+    parser.add_argument("--save_debug_render", action='store_true', default=False,
+                        help="Save a headless top-down debug render for supported environments.")
+    parser.add_argument("--debug_render_format", type=str, default="gif", choices=["gif"],
+                        help="Debug render output format.")
+    parser.add_argument("--debug_render_episodes", type=int, default=1,
+                        help="Number of eval episodes to capture for debug rendering.")
+    parser.add_argument("--debug_render_interval", type=int, default=1,
+                        help="Capture one debug render frame every N env steps.")
+    parser.add_argument("--debug_render_fps", type=int, default=8,
+                        help="Frames per second for saved debug render GIFs.")
+    parser.add_argument("--debug_render_show_sight", action='store_true', default=False,
+                        help="Draw agent sight circles in debug renders.")
+    parser.add_argument("--debug_render_dir", type=str, default="debug_renders",
+                        help="Directory for debug render outputs, relative to the run directory unless absolute.")
+    parser.add_argument("--save_replay", action='store_true', default=False,
+                        help="Save StarCraft II replays for supported environments.")
+    parser.add_argument("--replay_dir", type=str, default="",
+                        help="StarCraft II replay output directory.")
+    parser.add_argument("--replay_prefix", type=str, default="",
+                        help="StarCraft II replay filename prefix.")
 
     # pretrained parameters
     parser.add_argument("--model_dir", type=str, default=None, help="by default None. set the path to pretrained model.")

@@ -1,0 +1,16 @@
+.git
+logs
+checkpoints
+*.pt
+*.pth
+__pycache__
+.venv
+3rdparty
+dump
+backup
+mat/scripts/results
+mat/scripts/dump
+wandb
+*.sif
+*.npz
+*.pyc
