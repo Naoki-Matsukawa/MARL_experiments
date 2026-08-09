@@ -160,3 +160,24 @@ jobs:
           chmod +x "$SCRIPT"
           sg docker -c "$SCRIPT"
           rm -f "$SCRIPT"
+
+      - name: Fix ownership of files the container wrote as root
+        # Every image's default user is root, so anything a run writes into
+        # the bind-mounted checkout (e.g. mat/scripts/results/) ends up
+        # root-owned on the host. actions/checkout's cleanup on the *next*
+        # run can't remove those and fails the whole job before it even
+        # gets to "Resolve experiment manifest" (see git history for the
+        # EACCES this caused). Runs even if training failed/was cancelled.
+        if: always() && steps.plan.outputs.mode == 'direct'
+        run: |
+          set -euo pipefail
+          SCRIPT="$(mktemp)"
+          {
+            echo '#!/bin/bash'
+            echo 'set -euo pipefail'
+            printf 'docker run --rm -v %q:/workspace alpine chown -R %q /workspace\n' \
+              "$PWD" "$(id -u):$(id -g)"
+          } > "$SCRIPT"
+          chmod +x "$SCRIPT"
+          sg docker -c "$SCRIPT"
+          rm -f "$SCRIPT"
