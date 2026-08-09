@@ -6,10 +6,11 @@ name: Train on push
 #   train/vmas/navigation_mat   -> mat/scripts/configs/vmas/navigation_mat.yaml
 #
 # Runs on the self-hosted runner registered on shironagasu (see
-# docker/README.md and docs/ci-experiment-management-plan.md). Configs with
-# a top-level `slurm:` section are meant for a Slurm-capable runner, which
-# isn't registered yet, so those fail fast with a clear message instead of
-# queuing forever.
+# docker/README.md and docs/ci-experiment-management-plan.md). Configs
+# without a top-level `slurm:` section run directly on shironagasu via
+# Docker; configs with one are submitted to Slurm over SSH from shironagasu
+# to iruka2 (the Slurm login node), reusing the existing shared clone at
+# /home/mil/matsukawa/Multi-Agent-Transformer.
 on:
   push:
     branches:
@@ -57,11 +58,37 @@ jobs:
           echo "script=$SCRIPT" >> "$GITHUB_OUTPUT"
           echo "Resolved $CONFIG_PATH -> script=$SCRIPT mode=$MODE"
 
-      - name: Guard - Slurm-mode configs need a Slurm-capable runner (not registered yet)
+      - name: Submit to Slurm via iruka2
         if: steps.plan.outputs.mode == 'slurm'
+        env:
+          CONFIG_PATH: ${{ steps.plan.outputs.config_path }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          echo "::error::${{ steps.plan.outputs.config_path }} has a 'slurm:' section. Only direct execution on this runner (shironagasu) is wired up today; see docs/ci-experiment-management-plan.md."
-          exit 1
+          set -euo pipefail
+          # /home/mil/matsukawa is shared NFS across shironagasu and iruka2
+          # (the Slurm login node), so this reuses the same clone every
+          # interactive `git pull && sbatch ...` run already uses today —
+          # including its prebuilt .venv-cu121/etc, which a fresh
+          # actions/checkout wouldn't have. flock serializes concurrent
+          # train/** pushes so their `git checkout` calls don't race; it
+          # does mean a manual checkout in that clone at the same moment
+          # could still collide, same as it could today without CI.
+          ssh -o BatchMode=yes iruka2 bash -s -- "$BRANCH" "$CONFIG_PATH" <<'REMOTE'
+          set -euo pipefail
+          BRANCH="$1"
+          CONFIG_PATH="$2"
+          REPO=/home/mil/matsukawa/Multi-Agent-Transformer
+          cd "$REPO"
+          exec 9>.git/ci-slurm-submit.lock
+          flock -w 300 9
+
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git reset --hard "origin/$BRANCH"
+          git submodule update --init 3rdparty/robotarium_python_simulator 3rdparty/JaxMARL-Robotarium 3rdparty/MARBLER
+
+          CONFIG_PATH="$CONFIG_PATH" mat/scripts/submit_yaml_array.sh
+          REMOTE
 
       - name: Resolve Docker image for this environment
         if: steps.plan.outputs.mode == 'direct'
