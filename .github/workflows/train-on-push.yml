@@ -44,11 +44,7 @@ jobs:
             exit 1
           fi
 
-          if uv run python -c "
-import sys, yaml
-data = yaml.safe_load(open('$CONFIG_PATH')) or {}
-sys.exit(0 if isinstance(data, dict) and 'slurm' in data else 1)
-          "; then
+          if uv run python -c "import sys, yaml; data = yaml.safe_load(open('$CONFIG_PATH')) or {}; sys.exit(0 if isinstance(data, dict) and 'slurm' in data else 1)"; then
             MODE=slurm
           else
             MODE=direct
