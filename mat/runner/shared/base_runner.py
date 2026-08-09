@@ -84,6 +84,9 @@ class Runner(object):
         elif self.algorithm_name == "pld":
             from mat.algorithms.PLD.pld_trainer import PLDTrainer as TrainAlgo
             from mat.algorithms.PLD.pld_policy import PLDPolicy as Policy
+        elif self.algorithm_name == "cdbd":
+            from mat.algorithms.CDBD.cdbd_trainer import CDBDTrainer as TrainAlgo
+            from mat.algorithms.CDBD.cdbd_policy import CDBDPolicy as Policy
         elif self.algorithm_name == "r_mappo":
             from mat.algorithms.r_mappo.r_mappo import R_MAPPO as TrainAlgo
             from mat.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
@@ -107,6 +110,13 @@ class Runner(object):
                                  self.envs.action_space[0],
                                  self.num_agents,
                                  device=self.device)
+        elif self.algorithm_name == "cdbd":
+            self.policy = Policy(self.all_args,
+                                 self.envs.observation_space[0],
+                                 share_observation_space,
+                                 self.envs.action_space[0],
+                                 self.num_agents,
+                                 device=self.device)
         elif self.algorithm_name == "r_mappo" or self.algorithm_name == "happo":
             self.policy = Policy(self.all_args,
                                  self.envs.observation_space[0],
@@ -120,11 +130,16 @@ class Runner(object):
         if self.algorithm_name == "pld":
             self.all_args.use_valuenorm = False
             self.all_args.use_popart = False
+        if self.algorithm_name == "cdbd":
+            self.all_args.use_valuenorm = False
+            self.all_args.use_popart = False
 
         # algorithm
         if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
             self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device = self.device)
         elif self.algorithm_name == "pld":
+            self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device = self.device)
+        elif self.algorithm_name == "cdbd":
             self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device = self.device)
         elif self.algorithm_name == "r_mappo" or self.algorithm_name == "happo":
             self.trainer = TrainAlgo(self.all_args, self.policy, device = self.device)
@@ -162,21 +177,21 @@ class Runner(object):
     def compute(self):
         """Calculate returns for the collected data."""
         self.trainer.prep_rollout()
-        if self.buffer.available_actions is None:
+        if self.algorithm_name in ("r_mappo", "happo"):
+            next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
+                                                         np.concatenate(self.buffer.rnn_states_critic[-1]),
+                                                         np.concatenate(self.buffer.masks[-1]))
+        elif self.buffer.available_actions is None:
             next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
                                                          np.concatenate(self.buffer.obs[-1]),
                                                          np.concatenate(self.buffer.rnn_states_critic[-1]),
                                                          np.concatenate(self.buffer.masks[-1]))
-        elif self.algorithm_name == "mat" or self.algorithm_name == "mat_dec" or self.algorithm_name == "pld":
+        else:
             next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
                                                          np.concatenate(self.buffer.obs[-1]),
                                                          np.concatenate(self.buffer.rnn_states_critic[-1]),
                                                          np.concatenate(self.buffer.masks[-1]),
                                                          np.concatenate(self.buffer.available_actions[-1]))
-        elif self.algorithm_name == "r_mappo" or self.algorithm_name == "happo":
-            next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
-                                                         np.concatenate(self.buffer.rnn_states_critic[-1]),
-                                                         np.concatenate(self.buffer.masks[-1]))
 
         next_values = np.array(np.split(_t2n(next_values), self.n_rollout_threads))
         self.buffer.compute_returns(next_values, self.trainer.value_normalizer)

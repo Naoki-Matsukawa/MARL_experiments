@@ -61,7 +61,8 @@ class TransformerPolicy:
                                n_block=args.n_block, n_embd=args.n_embd, n_head=args.n_head,
                                encode_state=args.encode_state, device=device,
                                action_type=self.action_type, dec_actor=args.dec_actor,
-                               share_actor=args.share_actor)
+                               share_actor=args.share_actor,
+                               use_agent_id=getattr(args, "use_agent_id", False))
         if args.env_name == "hands":
             self.transformer.zero_std()
 

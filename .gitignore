@@ -1,0 +1,59 @@
+# OS/editor files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Python environments and packaging
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Project outputs and local artifacts
+logs/
+log/
+checkpoints/
+wandb/
+runs/
+results/
+dump/
+*.pt
+*.pth
+*.pkl
+
+# External/local environment assets
+SMAC_Maps/
+
+# Vendored third-party repos (each has its own .git; fetch via setup
+# scripts / submodules instead of committing directly, see docs/)
+3rdparty/
+football/
+mujoco210-linux-x86_64.tar.gz
+
+# Archive/zip extraction junk
+__MACOSX/
+
+# Personal backups and scratch files, not part of the project source
+backup/
+docker-bu
+docker-football
+dockerfile
+dockerfile-mini
+codex.md
+temp.sh
+bu_requirements.txt

@@ -1,0 +1,13 @@
+extends: discovery_mat.yaml
+
+runs:
+  - name: vmas_discovery_cdbd
+    seeds: [1, 2, 3]
+    args:
+      algorithm_name: cdbd
+      experiment_name: vmas_discovery_cdbd
+      use_recurrent_policy: true
+      data_chunk_length: 10
+      ppo_epoch: 10
+      cdbd_belief_coef: 0.0
+      cdbd_teacher_model_dir: /home/mil/matsukawa/Multi-Agent-Transformer/mat/scripts/results/VMAS/discovery/mat/vmas_discovery_mat/wandb/run-20260609_235739-pn3yb67s/files

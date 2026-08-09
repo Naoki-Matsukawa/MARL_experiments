@@ -29,8 +29,8 @@ class SMACRunner(Runner):
             self.eval(0)
             self.all_args.eval_episodes = original_eval_episodes
             return
-        for _ in range(eval_runs):
-            self.eval(0)
+        for eval_idx in range(eval_runs):
+            self.eval(eval_idx)
 
     def run(self):
         self.warmup()
@@ -227,10 +227,10 @@ class SMACRunner(Runner):
 
     def log_train(self, train_infos, total_num_steps):
         train_infos["average_step_rewards"] = np.mean(self.buffer.rewards)
-        for k, v in train_infos.items():
-            if self.use_wandb:
-                wandb.log({k: v}, step=total_num_steps)
-            else:
+        if self.use_wandb:
+            wandb.log(train_infos, step=total_num_steps)
+        else:
+            for k, v in train_infos.items():
                 self.writter.add_scalars(k, {k: v}, total_num_steps)
 
     @torch.no_grad()
@@ -380,7 +380,7 @@ class SMACRunner(Runner):
                 eval_obs_for_policy = eval_obs + noise
                 
             self.trainer.prep_rollout()
-            if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec" or self.algorithm_name == "pld":
+            if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec" or self.algorithm_name == "pld" or self.algorithm_name == "cdbd":
                 if self.collect_eval_rollouts:
                     eval_values, eval_actions, eval_action_log_probs, eval_rnn_states, _ = \
                         self.trainer.policy.get_actions(np.concatenate(eval_share_obs),
@@ -535,13 +535,19 @@ class SMACRunner(Runner):
                 if getattr(self.all_args, "save_replay", False):
                     self.eval_envs.save_replay()
                 eval_episode_rewards = np.array(eval_episode_rewards)
-                eval_env_infos = {'eval_average_episode_rewards': eval_episode_rewards}                
-                self.log_env(eval_env_infos, total_num_steps)
                 eval_win_rate = eval_battles_won/eval_episode
                 print("eval win rate is {}.".format(eval_win_rate))
                 if self.use_wandb:
-                    wandb.log({"eval_win_rate": eval_win_rate}, step=total_num_steps)
+                    wandb.log({
+                        "eval_average_episode_rewards": np.mean(eval_episode_rewards),
+                        "eval_win_rate": eval_win_rate,
+                    }, step=total_num_steps)
                 else:
+                    self.writter.add_scalars(
+                        "eval_average_episode_rewards",
+                        {"eval_average_episode_rewards": np.mean(eval_episode_rewards)},
+                        total_num_steps,
+                    )
                     self.writter.add_scalars("eval_win_rate", {"eval_win_rate": eval_win_rate}, total_num_steps)
                 break
 
@@ -625,12 +631,18 @@ class SMACRunner(Runner):
 
             if eval_episode >= self.all_args.eval_episodes:
                 eval_episode_rewards = np.array(eval_episode_rewards)
-                student_env_infos = {'student_eval_average_episode_rewards': eval_episode_rewards}
-                self.log_env(student_env_infos, total_num_steps)
                 student_win_rate = student_battles_won / eval_episode
                 if self.use_wandb:
-                    wandb.log({"student_eval_win_rate": student_win_rate}, step=total_num_steps)
+                    wandb.log({
+                        "student_eval_average_episode_rewards": np.mean(eval_episode_rewards),
+                        "student_eval_win_rate": student_win_rate,
+                    }, step=total_num_steps)
                 else:
+                    self.writter.add_scalars(
+                        "student_eval_average_episode_rewards",
+                        {"student_eval_average_episode_rewards": np.mean(eval_episode_rewards)},
+                        total_num_steps,
+                    )
                     self.writter.add_scalars("student_eval_win_rate", {"student_eval_win_rate": student_win_rate}, total_num_steps)
                 break
 

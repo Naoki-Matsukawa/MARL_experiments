@@ -1,35 +1,59 @@
 # YAML experiment configs
 
-The recommended entry point is the single experiment registry:
+Use one YAML file per experiment family. Each case file is self-contained:
+launcher settings, method settings, map settings, and sweep settings live in
+the same file.
+
+Run examples from the repository root:
 
 ```bash
-python run_yaml.py configs/experiments.yaml --list
-python run_yaml.py configs/experiments.yaml --run smac_single --dry-run
-python run_yaml.py configs/experiments.yaml --run smac_single
+uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac_single.yaml --dry-run
+uv run python mat/scripts/run_yaml.py mat/scripts/configs/partial_enemy_jitter.yaml --dry-run
+uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac_distillation_partial_enemy_jitter.yaml --dry-run
 ```
 
-The file is organized as:
+Main student-teacher random/partial experiment:
+
+```bash
+uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac_distillation_partial_enemy_jitter.yaml
+```
+
+Submit expanded runs as separate Slurm array tasks:
+
+```bash
+CONFIG_PATH=mat/scripts/configs/smac_distillation_partial_enemy_jitter.yaml \
+mat/scripts/submit_yaml_array.sh
+```
+
+Slurm array settings can live in the YAML:
 
 ```yaml
-base:       # defaults shared by most runs
-presets:   # reusable blocks such as smac_single, smac_multi, mat, pld
-runs:      # named executable experiments
+resources:
+  num_gpus: 3
+  gpus_per_run: 1
+
+slurm:
+  script: mat/scripts/run_yaml_slurm.sh
 ```
 
-Each run can combine presets:
+`resources` applies to both local YAML execution and Slurm submission. With
+`cuda_visible_devices: auto`, the launcher assigns at most one active run per
+GPU from this pool. Slurm submission uses the same values to submit one expanded
+run per array task with at most `num_gpus` concurrent tasks.
 
-```yaml
-runs:
-  - name: partial_obs
-    use: [smac_single, mat, partial_obs, enemy_group_jitter]
-    seeds: [1, 2, 3]
-    matrix:
-      sight_range: [9, 7, 5]
-      enemy_position_jitter: [0.0, 1.5]
-    args:
-      map_name: 3s5z_vs_3s6z
-      experiment_name: "partial_sight{sight_range}_ejitter{enemy_position_jitter}"
-```
+Available case files:
+
+- `smac_single.yaml`
+- `smac_multi.yaml`
+- `smac_few_shot.yaml`
+- `smac_pld.yaml`
+- `smac_distillation.yaml`
+- `partial_enemy_jitter.yaml`
+- `smac_distillation_partial_enemy_jitter.yaml`
+- `inspect_enemy_jitter.yaml`
+
+`experiments.yaml` is kept as the older single-registry style, but new runs
+should prefer the split case files.
 
 YAML keys under `args` are translated directly to CLI flags. For example:
 
@@ -46,42 +70,9 @@ becomes:
 --map_name 3m --use_eval --train_maps 3m MMM 3s5z
 ```
 
-Use `seeds` for seed loops and `matrix` for simple sweeps. String values can
-reference generated arguments:
+Use `seeds` for seed loops and `matrix` for sweeps. String values can reference
+generated arguments:
 
 ```yaml
-experiment_name: "partial_{map_name}_sight{sight_range}"
+experiment_name: "partial_sight{sight_range}_ejitter{enemy_position_jitter}"
 ```
-
-For SMAC, the registry uses headless-friendly visualization settings. The
-current SMAC environment does not produce RGB frames from `render()`, so GIF
-debug rendering should be implemented as a top-down renderer from raw unit
-positions rather than as a StarCraft II screen capture.
-
-Planned headless debug render settings live in YAML as normal args:
-
-```yaml
-use: [smac_single, mat, enemy_group_jitter, headless_debug_render]
-args:
-  save_debug_render: true
-  debug_render_format: gif
-  debug_render_show_sight: true
-```
-
-Enemy spawn randomization is configured in the same way:
-
-```yaml
-use: [enemy_group_jitter]
-args:
-  randomize_enemy_position: true
-  enemy_position_jitter: 1.5
-  enemy_position_jitter_mode: group
-```
-
-The older per-script YAML files are kept as smaller examples:
-
-- `smac_single.yaml`
-- `smac_multi.yaml`
-- `smac_few_shot.yaml`
-- `smac_pld.yaml`
-- `smac_distillation.yaml`

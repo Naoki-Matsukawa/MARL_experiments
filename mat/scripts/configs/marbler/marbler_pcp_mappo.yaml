@@ -1,0 +1,11 @@
+extends: marbler_predator_capture_prey.yaml
+
+runs:
+  - name: marbler_pcp_mappo
+    seeds: [4, 5, 6]
+    args:
+      algorithm_name: r_mappo
+      experiment_name: marbler_pcp_mappo
+      use_recurrent_policy: true
+      data_chunk_length: 10
+      ppo_epoch: 10

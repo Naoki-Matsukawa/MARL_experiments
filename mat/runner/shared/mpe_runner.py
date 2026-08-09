@@ -244,7 +244,7 @@ class MPERunner(Runner):
             torch.zeros(
                 1,
                 self.n_eval_rollout_threads,
-                student_policy.rnn.hidden_size,
+                student_policy.hidden_dim,
                 device=self.device
             )
             for student_policy in self.trainer.student_policy
@@ -268,14 +268,19 @@ class MPERunner(Runner):
                 student_hidden_states[agent_id] = hidden_state
                 actions_per_agent.append(action_tensor.cpu().numpy())
 
-            eval_actions = np.stack(actions_per_agent, axis=1).astype(np.int32)
+            eval_actions = np.stack(actions_per_agent, axis=1)
 
-            if eval_envs.action_space[0].__class__.__name__ == 'MultiDiscrete':
-                raise NotImplementedError("Student evaluation does not currently support MultiDiscrete action spaces.")
-            elif eval_envs.action_space[0].__class__.__name__ == 'Discrete':
-                eval_actions_env = np.eye(eval_envs.action_space[0].n)[eval_actions]
+            action_cls = eval_envs.action_space[0].__class__.__name__
+            if action_cls == 'Discrete':
+                eval_actions_env = np.eye(eval_envs.action_space[0].n)[eval_actions.astype(np.int32)]
+            elif action_cls == 'Box':
+                eval_actions_env = np.clip(
+                    eval_actions.astype(np.float32),
+                    eval_envs.action_space[0].low,
+                    eval_envs.action_space[0].high,
+                )
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"Student evaluation does not support {action_cls} action spaces.")
 
             eval_obs, eval_rewards, eval_dones, _ = eval_envs.step(eval_actions_env)
             eval_episode_rewards.append(eval_rewards)

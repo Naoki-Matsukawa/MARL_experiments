@@ -1,0 +1,11 @@
+extends: navigation_mat.yaml
+
+runs:
+  - name: vmas_navigation_mappo
+    seeds: [1, 2, 3]
+    args:
+      algorithm_name: r_mappo
+      experiment_name: vmas_nav_mappo
+      use_recurrent_policy: true
+      data_chunk_length: 10
+      ppo_epoch: 10

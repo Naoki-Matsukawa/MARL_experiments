@@ -4,3 +4,7 @@ dump/
 .venv/
 __pycache__/
 .venv_py310/
+stdout.*
+stderr.*
+tmux-*.log
+dependency_backups/

@@ -165,7 +165,7 @@ def get_config():
 
     # prepare parameters
     parser.add_argument("--algorithm_name", type=str,
-                        default='mat', choices=["mat", "mat_dec", "mat_encoder", "mat_decoder", "mat_gru", "r_mappo", "pld"])
+                        default='mat', choices=["mat", "mat_dec", "mat_encoder", "mat_decoder", "mat_gru", "r_mappo", "pld", "cdbd"])
 
     parser.add_argument("--experiment_name", type=str, default="check", help="an identifier to distinguish different experiment.")
     parser.add_argument("--seed", type=int, default=1, help="Random seed for numpy/torch")
@@ -320,8 +320,14 @@ def get_config():
     parser.add_argument("--use_eval", action='store_true', default=False, help="by default, do not start evaluation. If set`, start evaluation alongside with training.")
     parser.add_argument("--eval_interval", type=int, default=25, help="time duration between contiunous twice evaluation progress.")
     parser.add_argument("--eval_episodes", type=int, default=32, help="number of episodes of a single evaluation.")
+    parser.add_argument("--eval_runs", type=int, default=100,
+                        help="Number of evaluation calls when running from a pretrained model.")
+    parser.add_argument("--collect_eval_rollouts", action='store_true', default=False,
+                        help="Save evaluation rollout arrays when running evaluation.")
 
     # render parameters
+    parser.add_argument("--gif_num_snapshots", type=int, default=0,
+                        help="Number of GIF snapshots to save evenly across training. 0 disables GIF saving.")
     parser.add_argument("--save_gifs", action='store_true', default=False, help="by default, do not save render video. If set, save video.")
     parser.add_argument("--use_render", action='store_true', default=False, help="by default, do not render the env during training. If set, start render. Note: something, the environment has internal render process which is not controlled by this hyperparam.")
     parser.add_argument("--render_episodes", type=int, default=5, help="the number of episodes to render a given env")
@@ -340,6 +346,14 @@ def get_config():
                         help="Draw agent sight circles in debug renders.")
     parser.add_argument("--debug_render_dir", type=str, default="debug_renders",
                         help="Directory for debug render outputs, relative to the run directory unless absolute.")
+
+    # CDBD
+    parser.add_argument("--cdbd_teacher_model_dir", type=str, default=None,
+                        help="Path to a frozen MAT teacher checkpoint or a directory containing transformer checkpoints.")
+    parser.add_argument("--cdbd_latent_dim", type=int, default=None,
+                        help="Student projection latent dimension. Defaults to hidden_size.")
+    parser.add_argument("--cdbd_belief_coef", type=float, default=1.0,
+                        help="Weight for CDBD teacher-latent distillation loss.")
     parser.add_argument("--save_replay", action='store_true', default=False,
                         help="Save StarCraft II replays for supported environments.")
     parser.add_argument("--replay_dir", type=str, default="",
@@ -358,6 +372,8 @@ def get_config():
     parser.add_argument("--n_head", type=int, default=1)
     parser.add_argument("--dec_actor", action='store_true', default=False)
     parser.add_argument("--share_actor", action='store_true', default=False)
+    parser.add_argument("--use_agent_id", action='store_true', default=False,
+                        help="Add learnable agent ID embeddings to MAT encoder and decoder.")
 
     # add for online multi-task
     parser.add_argument("--train_maps", type=str, nargs='+', default=None)

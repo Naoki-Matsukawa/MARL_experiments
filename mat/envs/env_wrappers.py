@@ -2,7 +2,10 @@
 Modified from OpenAI Baselines code to work with multi-agent envs
 """
 import numpy as np
+import os
+import time
 import torch
+import traceback
 from multiprocessing import Process, Pipe
 from abc import ABC, abstractmethod
 from mat.utils.util import tile_images
@@ -168,6 +171,8 @@ def worker(remote, parent_remote, env_fn_wrapper):
             env.close()
             remote.close()
             break
+        elif cmd == 'get_num_agents':
+            remote.send(env.n_agents)
         elif cmd == 'get_spaces':
             remote.send((env.observation_space, env.share_observation_space, env.action_space))
         else:
@@ -256,6 +261,8 @@ class SubprocVecEnv(ShareVecEnv):
         for remote in self.work_remotes:
             remote.close()
 
+        self.remotes[0].send(('get_num_agents', None))
+        self.n_agents = self.remotes[0].recv()
         self.remotes[0].send(('get_spaces', None))
         observation_space, share_observation_space, action_space = self.remotes[0].recv()
         ShareVecEnv.__init__(self, len(env_fns), observation_space,
@@ -315,43 +322,54 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
     parent_remote.close()
     env = env_fn_wrapper.x()
     while True:
-        cmd, data = remote.recv()
-        if cmd == 'step':
-            ob, s_ob, reward, done, info, available_actions = env.step(data)
-            if 'bool' in done.__class__.__name__:
-                if done:
-                    ob, s_ob, available_actions = env.reset()
-            else:
-                if np.all(done):
-                    ob, s_ob, available_actions = env.reset()
+        try:
+            cmd, data = remote.recv()
+            if cmd == 'step':
+                ob, s_ob, reward, done, info, available_actions = env.step(data)
+                if 'bool' in done.__class__.__name__:
+                    if done:
+                        ob, s_ob, available_actions = env.reset()
+                else:
+                    if np.all(done):
+                        ob, s_ob, available_actions = env.reset()
 
-            remote.send((ob, s_ob, reward, done, info, available_actions))
-        elif cmd == 'reset':
-            ob, s_ob, available_actions = env.reset()
-            remote.send((ob, s_ob, available_actions))
-        elif cmd == 'reset_task':
-            ob = env.reset_task()
-            remote.send(ob)
-        elif cmd == 'render':
-            if data == "rgb_array":
-                fr = env.render(mode=data)
-                remote.send(fr)
-            elif data == "human":
-                env.render(mode=data)
-        elif cmd == 'close':
-            env.close()
-            remote.close()
+                remote.send((ob, s_ob, reward, done, info, available_actions))
+            elif cmd == 'reset':
+                ob, s_ob, available_actions = env.reset()
+                remote.send((ob, s_ob, available_actions))
+            elif cmd == 'reset_task':
+                ob = env.reset_task()
+                remote.send(ob)
+            elif cmd == 'render':
+                if data == "rgb_array":
+                    fr = env.render(mode=data)
+                    remote.send(fr)
+                elif data == "human":
+                    env.render(mode=data)
+            elif cmd == 'close':
+                env.close()
+                remote.close()
+                break
+            elif cmd == 'get_num_agents':
+                remote.send((env.n_agents))
+            elif cmd == 'get_spaces':
+                remote.send(
+                    (env.observation_space, env.share_observation_space, env.action_space))
+            elif cmd == 'render_vulnerability':
+                fr = env.render_vulnerability(data)
+                remote.send((fr))
+            else:
+                raise NotImplementedError
+        except EOFError:
             break
-        elif cmd == 'get_num_agents':
-            remote.send((env.n_agents))
-        elif cmd == 'get_spaces':
-            remote.send(
-                (env.observation_space, env.share_observation_space, env.action_space))
-        elif cmd == 'render_vulnerability':
-            fr = env.render_vulnerability(data)
-            remote.send((fr))
-        else:
-            raise NotImplementedError
+        except Exception as exc:
+            tb = traceback.format_exc()
+            print(tb, flush=True)
+            try:
+                remote.send(("__worker_error__", repr(exc), tb))
+            except Exception:
+                pass
+            break
 
 
 class ShareSubprocVecEnv(ShareVecEnv):
@@ -378,21 +396,67 @@ class ShareSubprocVecEnv(ShareVecEnv):
         ShareVecEnv.__init__(self, len(env_fns), observation_space,
                              share_observation_space, action_space)
 
+    def _reset_stagger_seconds(self):
+        try:
+            seconds = float(os.environ.get("MAT_ENV_RESET_STAGGER_SECONDS", "0"))
+        except ValueError:
+            seconds = 0
+        return max(0, seconds)
+
+    def _recv_from_all(self, op_name):
+        results = [None] * len(self.remotes)
+        pending = set(range(len(self.remotes)))
+        while pending:
+            for i in list(pending):
+                remote = self.remotes[i]
+                if remote.poll(1):
+                    try:
+                        result = remote.recv()
+                    except EOFError as exc:
+                        raise RuntimeError(
+                            f"{op_name}: env worker {i} closed the pipe "
+                            f"(exitcode={self.ps[i].exitcode})"
+                        ) from exc
+                    if (
+                        isinstance(result, tuple)
+                        and len(result) == 3
+                        and result[0] == "__worker_error__"
+                    ):
+                        raise RuntimeError(
+                            f"{op_name}: env worker {i} raised {result[1]}\n{result[2]}"
+                        )
+                    results[i] = result
+                    pending.remove(i)
+                elif not self.ps[i].is_alive():
+                    raise RuntimeError(
+                        f"{op_name}: env worker {i} died "
+                        f"(exitcode={self.ps[i].exitcode})"
+                    )
+        return results
+
     def step_async(self, actions):
         for remote, action in zip(self.remotes, actions):
             remote.send(('step', action))
         self.waiting = True
 
     def step_wait(self):
-        results = [remote.recv() for remote in self.remotes]
+        results = self._recv_from_all("step_wait")
         self.waiting = False
         obs, share_obs, rews, dones, infos, available_actions = zip(*results)
         return np.stack(obs), np.stack(share_obs), np.stack(rews), np.stack(dones), infos, np.stack(available_actions)
 
     def reset(self):
-        for remote in self.remotes:
+        stagger_seconds = self._reset_stagger_seconds()
+        if stagger_seconds > 0:
+            print(
+                f"Staggering env reset across workers by {stagger_seconds:g}s.",
+                flush=True,
+            )
+        for i, remote in enumerate(self.remotes):
             remote.send(('reset', None))
-        results = [remote.recv() for remote in self.remotes]
+            if stagger_seconds > 0 and i < len(self.remotes) - 1:
+                time.sleep(stagger_seconds)
+        results = self._recv_from_all("reset")
         obs, share_obs, available_actions = zip(*results)
         return np.stack(obs), np.stack(share_obs), np.stack(available_actions)
 
@@ -687,6 +751,7 @@ class DummyVecEnv(ShareVecEnv):
     def __init__(self, env_fns):
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]
+        self.n_agents = env.n_agents
         ShareVecEnv.__init__(self, len(
             env_fns), env.observation_space, env.share_observation_space, env.action_space)
         self.actions = None

@@ -12,6 +12,7 @@ import itertools
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +28,37 @@ class SafeFormatDict(dict):
         return "{" + key + "}"
 
 
-def load_yaml(path: Path) -> dict[str, Any]:
+def load_yaml(path: Path, seen: set[Path] | None = None) -> dict[str, Any]:
+    path = path.resolve()
+    if seen is None:
+        seen = set()
+    if path in seen:
+        raise ValueError(f"circular YAML extends detected at {path}")
+    seen.add(path)
+
     with path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a YAML mapping at the top level")
-    return data
+
+    extends = data.get("extends")
+    if extends is None:
+        return data
+
+    if isinstance(extends, (str, Path)):
+        extends = [extends]
+    if not isinstance(extends, list):
+        raise ValueError("extends must be a path or a list of paths")
+
+    merged: dict[str, Any] = {}
+    for parent in extends:
+        parent_path = Path(parent)
+        if not parent_path.is_absolute():
+            parent_path = path.parent / parent_path
+        merged = deep_merge(merged, load_yaml(parent_path, seen))
+
+    child = {k: v for k, v in data.items() if k != "extends"}
+    return deep_merge(merged, child)
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -115,7 +141,7 @@ def iter_configured_runs(config: dict[str, Any], selected: set[str] | None) -> l
 
     runs = config.get("runs")
     if runs is None:
-        excluded = {"base", "defaults", "presets"}
+        excluded = {"base", "defaults", "presets", "extends"}
         run = {k: v for k, v in config.items() if k not in excluded}
         runs = [run]
     if not isinstance(runs, list):
@@ -200,6 +226,17 @@ def resolve_cwd(value: str | None) -> Path:
 
 
 def auto_gpu() -> str:
+    gpus = detect_gpu_pool()
+    return gpus[0] if gpus else "0"
+
+
+def detect_gpu_pool(respect_visible_devices: bool = True) -> list[str]:
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if respect_visible_devices and visible_devices and visible_devices not in {"NoDevFiles", "-1"}:
+        devices = [device.strip() for device in visible_devices.split(",") if device.strip()]
+        if devices:
+            return devices
+
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.free,index", "--format=csv,nounits,noheader"],
@@ -209,10 +246,9 @@ def auto_gpu() -> str:
             text=True,
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
-        return "0"
+        return ["0"]
 
-    best_index = "0"
-    best_memory = -1
+    gpus: list[tuple[int, str]] = []
     for line in result.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
         if len(parts) != 2:
@@ -221,13 +257,75 @@ def auto_gpu() -> str:
             memory = int(parts[0])
         except ValueError:
             continue
-        if memory > best_memory:
-            best_memory = memory
-            best_index = parts[1]
-    return best_index
+        gpus.append((memory, parts[1]))
+    if not gpus:
+        return ["0"]
+    return [index for _, index in sorted(gpus, reverse=True)]
 
 
-def build_command(run: dict[str, Any]) -> tuple[list[str], Path, dict[str, str]]:
+def get_resource_config(config: dict[str, Any]) -> dict[str, Any]:
+    resources = config.get("resources", {})
+    if resources is None:
+        return {}
+    if not isinstance(resources, dict):
+        raise ValueError("resources must be a mapping")
+    return resources
+
+
+def configured_gpu_pool(config: dict[str, Any], max_needed: int | None = None) -> list[str]:
+    resources = get_resource_config(config)
+    gpu_ids = resources.get("gpu_ids")
+    if gpu_ids is not None:
+        if not isinstance(gpu_ids, list):
+            raise ValueError("resources.gpu_ids must be a list")
+        gpu_pool = [str(gpu_id) for gpu_id in gpu_ids]
+        return gpu_pool[:max_needed] if max_needed is not None else gpu_pool
+
+    num_gpus = resources.get("num_gpus")
+    if num_gpus is None:
+        pool = detect_gpu_pool()
+        return pool[:max_needed] if max_needed is not None else pool
+    try:
+        num_gpus = int(num_gpus)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("resources.num_gpus must be an integer") from exc
+    if num_gpus <= 0:
+        raise ValueError("resources.num_gpus must be positive")
+    if max_needed is not None:
+        num_gpus = min(num_gpus, max_needed)
+
+    respect_visible_devices = bool(
+        os.environ.get("SLURM_JOB_ID")
+        or os.environ.get("SLURM_ARRAY_JOB_ID")
+        or resources.get("respect_cuda_visible_devices", False)
+    )
+    pool = detect_gpu_pool(respect_visible_devices=respect_visible_devices)
+    if len(pool) < num_gpus:
+        raise RuntimeError(
+            f"resources.num_gpus={num_gpus} but only {len(pool)} GPU(s) are visible: {pool}. "
+            "Use resources.gpu_ids to choose explicit GPUs, or run where enough GPUs are visible."
+        )
+    return pool[:num_gpus]
+
+
+def configured_startup_stagger_seconds(config: dict[str, Any]) -> float:
+    resources = get_resource_config(config)
+    value = resources.get("startup_stagger_seconds", 0)
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("resources.startup_stagger_seconds must be a number") from exc
+    if seconds < 0:
+        raise ValueError("resources.startup_stagger_seconds must be non-negative")
+    return seconds
+
+
+def configured_require_cuda(config: dict[str, Any]) -> bool:
+    resources = get_resource_config(config)
+    return bool(resources.get("require_cuda", False))
+
+
+def build_command(run: dict[str, Any], gpu_override: str | None = None) -> tuple[list[str], Path, dict[str, str]]:
     args_dict = run.get("args", {})
     if not isinstance(args_dict, dict):
         raise ValueError("args must be a mapping")
@@ -256,12 +354,42 @@ def build_command(run: dict[str, Any]) -> tuple[list[str], Path, dict[str, str]]
     env.update({str(k): str(v) for k, v in env_updates.items()})
 
     gpu = formatted_run.get("cuda_visible_devices")
-    if gpu == "auto":
+    if gpu_override is not None:
+        gpu = gpu_override
+    elif gpu == "auto":
         gpu = auto_gpu()
     if gpu is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
     return command, cwd, env
+
+
+def assert_cuda_available(command: list[str], cwd: Path, env: dict[str, str]) -> None:
+    python = command[0]
+    probe = (
+        "import sys, torch; "
+        "print('torch', torch.__version__); "
+        "print('torch cuda', torch.version.cuda); "
+        "print('cuda available', torch.cuda.is_available()); "
+        "sys.exit(0 if torch.cuda.is_available() else 1)"
+    )
+    result = subprocess.run(
+        [python, "-c", probe],
+        cwd=str(cwd),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.returncode != 0:
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        raise RuntimeError(
+            "CUDA is required for this run, but PyTorch cannot use CUDA "
+            f"with CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES', 'unset')}."
+        )
 
 
 def print_command(command: list[str], cwd: Path, env: dict[str, str]) -> None:
@@ -270,19 +398,41 @@ def print_command(command: list[str], cwd: Path, env: dict[str, str]) -> None:
     print(f"(cd {cwd} && {prefix}{' '.join(command)})")
 
 
-def run_commands(runs: list[dict[str, Any]], dry_run: bool) -> int:
+def uses_auto_gpu(run: dict[str, Any]) -> bool:
+    return run.get("cuda_visible_devices") == "auto"
+
+
+def run_commands(
+    runs: list[dict[str, Any]],
+    dry_run: bool,
+    gpu_pool: list[str] | None = None,
+    startup_stagger_seconds: float = 0,
+    require_cuda: bool = False,
+) -> int:
+    auto_pool = gpu_pool if gpu_pool is not None else []
+    if any(uses_auto_gpu(run) for run in runs) and not auto_pool:
+        auto_pool = detect_gpu_pool()
+    if any(uses_auto_gpu(run) for run in runs):
+        print(f"Auto GPU pool: {auto_pool}")
+    auto_idx = 0
+
     processes: list[subprocess.Popen[Any]] = []
-    for run in runs:
-        command, cwd, env = build_command(run)
+    for index, run in enumerate(runs):
+        assigned_gpu = None
+        if uses_auto_gpu(run):
+            assigned_gpu = auto_pool[auto_idx % len(auto_pool)] if auto_pool else "0"
+            auto_idx += 1
+
+        command, cwd, env = build_command(run, gpu_override=assigned_gpu)
         print_command(command, cwd, env)
         if dry_run:
             continue
-        if run.get("parallel", True):
-            processes.append(subprocess.Popen(command, cwd=str(cwd), env=env))
-        else:
-            completed = subprocess.run(command, cwd=str(cwd), env=env)
-            if completed.returncode != 0:
-                return completed.returncode
+        if require_cuda:
+            assert_cuda_available(command, cwd, env)
+        processes.append(subprocess.Popen(command, cwd=str(cwd), env=env))
+        if startup_stagger_seconds > 0 and index < len(runs) - 1:
+            print(f"Waiting {startup_stagger_seconds:g}s before launching next run...")
+            time.sleep(startup_stagger_seconds)
 
     exit_code = 0
     for process in processes:
@@ -294,6 +444,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run mat/scripts experiments from YAML")
     parser.add_argument("config", type=Path, help="Path to an experiment YAML file")
     parser.add_argument("--run", action="append", dest="run_names", help="Run only the named run. Can be repeated")
+    parser.add_argument("--index", type=int, help="Run only the zero-based expanded run index after filtering")
+    parser.add_argument("--count", action="store_true", help="Print the number of expanded runs after filtering and exit")
     parser.add_argument("--list", action="store_true", help="List runs and exit")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running them")
     args = parser.parse_args(argv)
@@ -308,7 +460,23 @@ def main(argv: list[str] | None = None) -> int:
     if selected and not runs:
         print(f"No runs matched: {', '.join(sorted(selected))}", file=sys.stderr)
         return 1
-    return run_commands(runs, args.dry_run)
+    if args.count:
+        print(len(runs))
+        return 0
+    if args.index is not None:
+        if args.index < 0 or args.index >= len(runs):
+            print(f"--index {args.index} is out of range for {len(runs)} expanded runs", file=sys.stderr)
+            return 1
+        runs = [runs[args.index]]
+    auto_run_count = sum(1 for run in runs if uses_auto_gpu(run))
+    max_needed = auto_run_count if auto_run_count > 0 else None
+    return run_commands(
+        runs,
+        args.dry_run,
+        gpu_pool=configured_gpu_pool(config, max_needed=max_needed),
+        startup_stagger_seconds=configured_startup_stagger_seconds(config),
+        require_cuda=configured_require_cuda(config),
+    )
 
 
 if __name__ == "__main__":

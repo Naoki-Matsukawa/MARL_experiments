@@ -110,7 +110,7 @@ class DecodeBlock(nn.Module):
 
 class Encoder(nn.Module):
 
-    def __init__(self, state_dim, obs_dim, n_block, n_embd, n_head, n_agent, encode_state):
+    def __init__(self, state_dim, obs_dim, n_block, n_embd, n_head, n_agent, encode_state, use_agent_id=False):
         super(Encoder, self).__init__()
 
         self.state_dim = state_dim
@@ -118,7 +118,7 @@ class Encoder(nn.Module):
         self.n_embd = n_embd
         self.n_agent = n_agent
         self.encode_state = encode_state
-        # self.agent_id_emb = nn.Parameter(torch.zeros(1, n_agent, n_embd))
+        self.agent_id_emb = nn.Parameter(torch.zeros(1, n_agent, n_embd)) if use_agent_id else None
 
         self.state_encoder = nn.Sequential(nn.LayerNorm(state_dim),
                                            init_(nn.Linear(state_dim, n_embd), activate=True), nn.GELU())
@@ -140,6 +140,9 @@ class Encoder(nn.Module):
             obs_embeddings = self.obs_encoder(obs)
             x = obs_embeddings
 
+        if self.agent_id_emb is not None:
+            x = x + self.agent_id_emb
+
         rep = self.blocks(self.ln(x))
         v_loc = self.head(rep)
 
@@ -149,7 +152,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
 
     def __init__(self, obs_dim, action_dim, n_block, n_embd, n_head, n_agent,
-                 action_type='Discrete', dec_actor=False, share_actor=False):
+                 action_type='Discrete', dec_actor=False, share_actor=False, use_agent_id=False):
         super(Decoder, self).__init__()
 
         self.action_dim = action_dim
@@ -180,7 +183,7 @@ class Decoder(nn.Module):
                                           init_(nn.Linear(n_embd, action_dim)))
                     self.mlp.append(actor)
         else:
-            # self.agent_id_emb = nn.Parameter(torch.zeros(1, n_agent, n_embd))
+            self.agent_id_emb = nn.Parameter(torch.zeros(1, n_agent, n_embd)) if use_agent_id else None
             if action_type == 'Discrete':
                 self.action_encoder = nn.Sequential(init_(nn.Linear(action_dim + 1, n_embd, bias=False), activate=True),
                                                     nn.GELU())
@@ -214,6 +217,8 @@ class Decoder(nn.Module):
         else:
             action_embeddings = self.action_encoder(action)
             x = self.ln(action_embeddings)
+            if self.agent_id_emb is not None:
+                x = x + self.agent_id_emb
             for block in self.blocks:
                 x = block(x, obs_rep)
             logit = self.head(x)
@@ -225,7 +230,7 @@ class MultiAgentTransformer(nn.Module):
 
     def __init__(self, state_dim, obs_dim, action_dim, n_agent,
                  n_block, n_embd, n_head, encode_state=False, device=torch.device("cpu"),
-                 action_type='Discrete', dec_actor=False, share_actor=False):
+                 action_type='Discrete', dec_actor=False, share_actor=False, use_agent_id=False):
         super(MultiAgentTransformer, self).__init__()
 
         self.n_agent = n_agent
@@ -237,9 +242,11 @@ class MultiAgentTransformer(nn.Module):
         # state unused
         state_dim = 37
 
-        self.encoder = Encoder(state_dim, obs_dim, n_block, n_embd, n_head, n_agent, encode_state)
+        self.encoder = Encoder(state_dim, obs_dim, n_block, n_embd, n_head, n_agent, encode_state,
+                               use_agent_id=use_agent_id)
         self.decoder = Decoder(obs_dim, action_dim, n_block, n_embd, n_head, n_agent,
-                               self.action_type, dec_actor=dec_actor, share_actor=share_actor)
+                               self.action_type, dec_actor=dec_actor, share_actor=share_actor,
+                               use_agent_id=use_agent_id)
         self.to(device)
 
     def zero_std(self):

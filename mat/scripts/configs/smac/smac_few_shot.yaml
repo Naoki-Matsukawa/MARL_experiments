@@ -1,9 +1,10 @@
 defaults:
   cwd: mat/scripts
   python: python
+  cuda_visible_devices: auto
   script: train/train_smac_multi.py
-  cuda_visible_devices: "0"
   args:
+    user_name: matsukawa-naoki555-university-of-tokyo
     env_name: StarCraft2_multi
     algorithm_name: mat
     experiment_name: "from_scratch_{train_maps}"
@@ -21,6 +22,13 @@ defaults:
     clip_param: 0.05
     use_value_active_masks: true
     use_eval: true
+    save_debug_render: true
+    debug_render_format: gif
+    debug_render_episodes: 1
+    debug_render_interval: 4
+    debug_render_fps: 8
+    debug_render_show_sight: true
+    debug_render_dir: "debug_renders/{name}_seed{seed}"
 
 runs:
   - name: smac_few_shot

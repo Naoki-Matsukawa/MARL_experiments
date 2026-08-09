@@ -92,7 +92,6 @@ def main(args):
         all_args.share_actor = True
     if all_args.model_dir is not None:
         all_args.use_eval = True
-        all_args.collect_eval_rollouts = True
 
     # cuda
     if all_args.cuda and torch.cuda.is_available():
