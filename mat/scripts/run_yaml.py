@@ -325,7 +325,9 @@ def configured_require_cuda(config: dict[str, Any]) -> bool:
     return bool(resources.get("require_cuda", False))
 
 
-def build_command(run: dict[str, Any], gpu_override: str | None = None) -> tuple[list[str], Path, dict[str, str]]:
+def build_command(
+    run: dict[str, Any], gpu_override: str | None = None, python_override: str | None = None
+) -> tuple[list[str], Path, dict[str, str]]:
     args_dict = run.get("args", {})
     if not isinstance(args_dict, dict):
         raise ValueError("args must be a mapping")
@@ -337,7 +339,7 @@ def build_command(run: dict[str, Any], gpu_override: str | None = None) -> tuple
 
     formatted_run = format_value(run, context)
     args_dict = formatted_run.get("args", {})
-    python = formatted_run.get("python", "python")
+    python = python_override if python_override is not None else formatted_run.get("python", "python")
     script = formatted_run.get("script")
     if script is None:
         raise ValueError("script is required")
@@ -408,6 +410,7 @@ def run_commands(
     gpu_pool: list[str] | None = None,
     startup_stagger_seconds: float = 0,
     require_cuda: bool = False,
+    python_override: str | None = None,
 ) -> int:
     auto_pool = gpu_pool if gpu_pool is not None else []
     if any(uses_auto_gpu(run) for run in runs) and not auto_pool:
@@ -423,7 +426,7 @@ def run_commands(
             assigned_gpu = auto_pool[auto_idx % len(auto_pool)] if auto_pool else "0"
             auto_idx += 1
 
-        command, cwd, env = build_command(run, gpu_override=assigned_gpu)
+        command, cwd, env = build_command(run, gpu_override=assigned_gpu, python_override=python_override)
         print_command(command, cwd, env)
         if dry_run:
             continue
@@ -448,6 +451,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--count", action="store_true", help="Print the number of expanded runs after filtering and exit")
     parser.add_argument("--list", action="store_true", help="List runs and exit")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running them")
+    parser.add_argument(
+        "--print-script",
+        action="store_true",
+        help="Print each distinct resolved 'script' path for the selected runs and exit",
+    )
+    parser.add_argument(
+        "--force-python",
+        help=(
+            "Override every run's 'python' field with this interpreter (e.g. 'python'). "
+            "Useful when running inside a container that already has the right "
+            "interpreter on PATH, since YAML configs often hardcode a host venv path."
+        ),
+    )
     args = parser.parse_args(argv)
 
     config = load_yaml(args.config)
@@ -463,6 +479,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.count:
         print(len(runs))
         return 0
+    if args.print_script:
+        scripts: list[str] = []
+        for run in runs:
+            formatted_run = format_value(run, dict(run.get("args", {})))
+            script = formatted_run.get("script")
+            if script and script not in scripts:
+                scripts.append(script)
+        for script in scripts:
+            print(script)
+        return 0
     if args.index is not None:
         if args.index < 0 or args.index >= len(runs):
             print(f"--index {args.index} is out of range for {len(runs)} expanded runs", file=sys.stderr)
@@ -476,6 +502,7 @@ def main(argv: list[str] | None = None) -> int:
         gpu_pool=configured_gpu_pool(config, max_needed=max_needed),
         startup_stagger_seconds=configured_startup_stagger_seconds(config),
         require_cuda=configured_require_cuda(config),
+        python_override=args.force_python,
     )
 
 

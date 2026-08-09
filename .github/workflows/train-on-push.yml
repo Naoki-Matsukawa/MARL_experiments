@@ -1,0 +1,139 @@
+name: Train on push
+
+# Push to a branch named train/<path under mat/scripts/configs, without
+# .yaml> to run that experiment manifest. Example:
+#   train/smac/smac_single      -> mat/scripts/configs/smac/smac_single.yaml
+#   train/vmas/navigation_mat   -> mat/scripts/configs/vmas/navigation_mat.yaml
+#
+# Runs on the self-hosted runner registered on shironagasu (see
+# docker/README.md and docs/ci-experiment-management-plan.md). Configs with
+# a top-level `slurm:` section are meant for a Slurm-capable runner, which
+# isn't registered yet, so those fail fast with a clear message instead of
+# queuing forever.
+on:
+  push:
+    branches:
+      - "train/**"
+
+concurrency:
+  group: train-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: self-hosted
+    timeout-minutes: 4320 # 3 days, matches run_yaml_slurm.sh's -t 3-0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Extend PATH for uv (~/.local/bin isn't on the runner service's default PATH)
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve experiment manifest + execution mode from branch name
+        id: plan
+        run: |
+          set -euo pipefail
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          REL="${BRANCH#train/}"
+          CONFIG_PATH="mat/scripts/configs/${REL}.yaml"
+
+          if [ ! -f "$CONFIG_PATH" ]; then
+            echo "::error::No config at $CONFIG_PATH. Push to a branch named train/<path under mat/scripts/configs, without .yaml>."
+            exit 1
+          fi
+
+          if uv run python -c "
+import sys, yaml
+data = yaml.safe_load(open('$CONFIG_PATH')) or {}
+sys.exit(0 if isinstance(data, dict) and 'slurm' in data else 1)
+          "; then
+            MODE=slurm
+          else
+            MODE=direct
+          fi
+
+          SCRIPT="$(uv run python mat/scripts/run_yaml.py "$CONFIG_PATH" --print-script | head -n1)"
+
+          echo "config_path=$CONFIG_PATH" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "script=$SCRIPT" >> "$GITHUB_OUTPUT"
+          echo "Resolved $CONFIG_PATH -> script=$SCRIPT mode=$MODE"
+
+      - name: Guard - Slurm-mode configs need a Slurm-capable runner (not registered yet)
+        if: steps.plan.outputs.mode == 'slurm'
+        run: |
+          echo "::error::${{ steps.plan.outputs.config_path }} has a 'slurm:' section. Only direct execution on this runner (shironagasu) is wired up today; see docs/ci-experiment-management-plan.md."
+          exit 1
+
+      - name: Resolve Docker image for this environment
+        if: steps.plan.outputs.mode == 'direct'
+        id: image
+        run: |
+          set -euo pipefail
+          case "${{ steps.plan.outputs.script }}" in
+            */train_smac.py)                IMAGE=mat-smac:cuda12 ;;
+            */train_football.py)             IMAGE=mat-football:cuda12 ;;
+            */train_mpe.py)                  IMAGE=mat-mpe:cuda12 ;;
+            */train_vmas.py)                 IMAGE=mat-vmas:cuda12 ;;
+            */train_robotarium.py)           IMAGE=mat-robotarium:cuda12 ;;
+            */train_jaxmarl_robotarium.py)   IMAGE=mat-jaxmarl-robotarium:cuda12 ;;
+            */train_mujoco.py)               IMAGE=mat-ma-mujoco:cuda12 ;;
+            *)
+              echo "::error::No Docker image for script '${{ steps.plan.outputs.script }}' yet (see docker/README.md for which envs have images)."
+              exit 1
+              ;;
+          esac
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Run training on shironagasu
+        if: steps.plan.outputs.mode == 'direct'
+        env:
+          CONFIG_PATH: ${{ steps.plan.outputs.config_path }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          # StarCraftII (~5GB binary, not in git) is fetched once with
+          # install_sc2.sh into the main working clone; every SMAC run
+          # bind-mounts it in read-only rather than re-fetching per checkout.
+          SC2_HOST_PATH: /home/mil/matsukawa/Multi-Agent-Transformer/3rdparty/StarCraftII
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          WANDB_MODE=offline
+          [ -n "$WANDB_API_KEY" ] && WANDB_MODE=online
+
+          DOCKER_ARGS=(--rm --gpus all
+            -e "WANDB_API_KEY=$WANDB_API_KEY"
+            -e "WANDB_MODE=$WANDB_MODE"
+            -v "$PWD:/workspace/Multi-Agent-Transformer"
+            -w /workspace/Multi-Agent-Transformer)
+
+          if [[ "$IMAGE" == mat-smac:* ]]; then
+            DOCKER_ARGS+=(-e "SC2PATH=/workspace/Multi-Agent-Transformer/3rdparty/StarCraftII"
+                          -v "${SC2_HOST_PATH}:/workspace/Multi-Agent-Transformer/3rdparty/StarCraftII:ro")
+          fi
+          if [[ "$IMAGE" == mat-jaxmarl-robotarium:* ]]; then
+            DOCKER_ARGS+=(-e "XLA_PYTHON_CLIENT_PREALLOCATE=false" -e "JAX_PLATFORMS=cuda")
+          fi
+
+          # Run via a temp script rather than `sg docker -c "<one-liner>"` so
+          # array args with spaces/quotes don't have to survive a second
+          # layer of shell parsing. sg is needed because the runner's
+          # systemd --user session predates the matsukawa->docker group
+          # grant; a fresh login session wouldn't need this.
+          SCRIPT="$(mktemp)"
+          {
+            echo '#!/bin/bash'
+            echo 'set -euo pipefail'
+            printf 'docker run'
+            for a in "${DOCKER_ARGS[@]}"; do printf ' %q' "$a"; done
+            # --force-python overrides each run's 'python:' field (usually a
+            # host venv path like ../../.venv-cu121/bin/python) with the
+            # container's own interpreter, so existing configs run unmodified.
+            printf ' %q' "$IMAGE" 'python' 'mat/scripts/run_yaml.py' "$CONFIG_PATH" '--force-python' 'python'
+            echo
+          } > "$SCRIPT"
+          chmod +x "$SCRIPT"
+          sg docker -c "$SCRIPT"
+          rm -f "$SCRIPT"
