@@ -1,57 +1,133 @@
-# SMAC CUDA Container
+# Per-environment Docker images
 
-This container is for SMAC experiments on A100/H200 class GPUs. It uses a CUDA
-12.1 PyTorch image so the PyTorch build includes newer GPU architectures than
-the legacy local `torch==1.10.2+cu102` environment.
+Each simulation environment has its own image, dependency lock, and
+Dockerfile, so that conflicting dependencies (old `gym`, `jax`, `mujoco-py`,
+...) never have to share a single environment:
 
-Build the Docker image where Docker is available:
+| Env | Dockerfile | Deps |
+|---|---|---|
+| SMAC (StarCraft II) | `docker/Dockerfile.smac` | `docker/smac/{pyproject.toml,uv.lock}` |
+| Football (gfootball) | `docker/Dockerfile.football` | `docker/football/{pyproject.toml,uv.lock}` |
+| MPE | `docker/Dockerfile.mpe` | `docker/mpe/{pyproject.toml,uv.lock}` |
+| VMAS | `docker/Dockerfile.vmas` | `docker/vmas/{pyproject.toml,uv.lock}` |
+| Robotarium | `docker/Dockerfile.robotarium` | `docker/robotarium/{pyproject.toml,uv.lock}` |
+| JaxMARL-Robotarium | `docker/Dockerfile.jaxmarl-robotarium` | `docker/jaxmarl-robotarium/{pyproject.toml,uv.lock}` |
+| multiagent_mujoco (mujoco-py) | `docker/Dockerfile.ma-mujoco` | `docker/ma-mujoco/{pyproject.toml,uv.lock}` |
 
-```bash
-docker build -f Dockerfile.smac -t mat-smac:cuda12 .
+MARBLER and DexterousHandEnvs do not have images yet (MARBLER depends on an
+unpublished local patch of `robotarium_python_simulator`; DexterousHandEnvs
+needs Isaac Gym, which is EULA-gated and not pip-installable). See
+`docs/ci-experiment-management-plan.md` for the status of the wider CI/infra
+plan.
+
+## Base image and dependency install
+
+Every image is built `FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime` so
+the CUDA 12.1 / PyTorch 2.3.1 layer is shared and cached across images. Each
+Dockerfile installs its environment's dependencies with:
+
+```dockerfile
+COPY docker/<env>/pyproject.toml docker/<env>/uv.lock /tmp/<env>-project/
+RUN cd /tmp/<env>-project \
+    && uv export --frozen --no-hashes -o requirements.lock.txt \
+    && uv pip install --system --no-cache -r requirements.lock.txt
 ```
 
-Docker is mainly for producing the image. On Slurm/HPC, prefer Apptainer with
-`--nv`; it exposes the GPU allocation given by Slurm instead of using Docker's
-`--gpus all`.
+`uv pip install --system` installs straight into the base image's existing
+conda env instead of creating a separate uv-managed venv (`uv sync` would
+otherwise discard the preinstalled torch/CUDA build). Torch itself is
+intentionally left out of every `pyproject.toml` so it's never reinstalled —
+except `docker/vmas/pyproject.toml`, which pins `torch==2.3.1` explicitly
+because `vmas` itself declares torch as a dependency and would otherwise pull
+a newer, mismatched CUDA build.
 
-Optional local Docker smoke test:
+To add or update a dependency: edit the env's `pyproject.toml`, then run
+`(cd docker/<env> && uv lock)` to refresh its `uv.lock`, and rebuild.
 
-```bash
-./mat/scripts/run_yaml_docker.sh inspect_enemy_jitter
-```
-
-By default the Docker helper uses one GPU:
-
-```bash
-DOCKER_GPUS=device=0 ./mat/scripts/run_yaml_docker.sh inspect_enemy_jitter
-```
-
-For Slurm clusters that use Apptainer/Singularity, build a `.sif` from the
-Docker image where Docker is available:
+## Building an image
 
 ```bash
-apptainer build mat-smac_cuda12.sif docker-daemon://mat-smac:cuda12
+docker build -f docker/Dockerfile.<env> -t mat-<env>:cuda12 .
 ```
 
-Then submit:
+Build from the repository root (not `docker/`) — the Dockerfiles `COPY`
+paths relative to the repo root, and the SMAC/Robotarium/JaxMARL-Robotarium
+images need `3rdparty/` (see below) in the build context.
+
+## `3rdparty/` submodules
+
+`robotarium`, `jaxmarl-robotarium` read `3rdparty/robotarium_python_simulator`
+and `3rdparty/JaxMARL-Robotarium` (both git submodules) directly off disk at
+runtime, not as pip packages. Initialize them before building or running:
 
 ```bash
-CONTAINER_IMAGE=/path/to/mat-smac_cuda12.sif sbatch mat/scripts/run_yaml_apptainer_slurm.sh partial_enemy_jitter
+git submodule update --init 3rdparty/robotarium_python_simulator 3rdparty/JaxMARL-Robotarium
 ```
 
-The Slurm script requests one GPU:
+`3rdparty/StarCraftII` is a ~5GB binary install, not a submodule — fetch it
+with `install_sc2.sh` (or bind-mount an existing install) rather than baking
+it into the image; see below.
+
+## Running a container
 
 ```bash
-#SBATCH -G 1
+docker run --rm --gpus all \
+  -v "$(pwd)":/workspace/Multi-Agent-Transformer \
+  -w /workspace/Multi-Agent-Transformer/mat/scripts \
+  mat-<env>:cuda12 \
+  python train/train_<env>.py --env_name <...> ...
 ```
 
-Inside the job, `apptainer exec --nv` should only expose the GPU assigned by
-Slurm. Do not use Docker `--gpus all` inside Slurm unless the cluster explicitly
+Or via the YAML launcher: `python mat/scripts/run_yaml.py <config>` inside
+the container (see `mat/scripts/configs/README.md`).
+
+SMAC additionally needs `SC2PATH` and a StarCraft II install bind-mounted in:
+
+```bash
+docker run --rm --gpus all \
+  -e SC2PATH=/workspace/Multi-Agent-Transformer/3rdparty/StarCraftII \
+  -v "$(pwd)":/workspace/Multi-Agent-Transformer \
+  -w /workspace/Multi-Agent-Transformer \
+  mat-smac:cuda12 \
+  python mat/scripts/run_yaml.py <config>
+```
+
+JaxMARL-Robotarium needs a couple of JAX env vars set (also wired into its
+YAML configs under `mat/scripts/configs/marbler/`):
+
+```bash
+-e XLA_PYTHON_CLIENT_PREALLOCATE=false -e JAX_PLATFORMS=cuda
+```
+
+**Known issue**: JaxMARL-Robotarium's vendored barrier-certificate code
+(`3rdparty/JaxMARL-Robotarium/.../rps_jax/utilities/barrier_certificates2.py`)
+hits `XlaRuntimeError: cuSolver internal error` on `jnp.linalg.inv` on this
+cluster's V100 + driver 570.158.01 + jaxlib 0.4.38 combination. Reproduced
+across GPUs, not a memory-contention issue. Training script requires the CUDA
+backend (won't fall back to CPU). Unresolved — likely a jaxlib/cuSolver/driver
+compatibility issue in the vendored dependency, not in this repo's own code.
+
+## Slurm / Apptainer
+
+Docker is mainly for producing images locally. On Slurm/HPC, prefer
+Apptainer with `--nv`; it exposes the GPU allocation Slurm gives you instead
+of Docker's `--gpus all`. Build a `.sif` from a Docker image where Docker is
+available:
+
+```bash
+apptainer build mat-<env>_cuda12.sif docker-daemon://mat-<env>:cuda12
+```
+
+Then submit, e.g. for SMAC:
+
+```bash
+CONTAINER_IMAGE=/path/to/mat-smac_cuda12.sif sbatch mat/scripts/run_yaml_apptainer_slurm.sh <run-name>
+```
+
+`mat/scripts/run_yaml_apptainer_slurm.sh` requests one GPU (`#SBATCH -G 1`)
+and runs `apptainer exec --nv`, which only exposes the GPU Slurm assigned. Do
+not use Docker `--gpus all` inside Slurm unless the cluster explicitly
 requires Docker and scopes devices itself.
 
-The StarCraft II installation is not copied into the image. The scripts bind
-the repository into the container and use:
-
-```bash
-SC2PATH=/workspace/Multi-Agent-Transformer/3rdparty/StarCraftII
-```
+`mat/scripts/run_yaml_docker.sh` remains a local Docker smoke-test helper
+(defaults to the SMAC image; override `IMAGE`/`CONFIG_PATH` for other envs).

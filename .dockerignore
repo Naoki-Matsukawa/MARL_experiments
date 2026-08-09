@@ -4,12 +4,20 @@ checkpoints
 *.pt
 *.pth
 __pycache__
-.venv
-3rdparty
+.venv*
+mat/scripts/.venv*
+# Keep the public 3rdparty submodules (MARBLER, robotarium_python_simulator,
+# JaxMARL-Robotarium) available to COPY; only exclude the large binary
+# install and the unpublished local patch.
+3rdparty/StarCraftII
+3rdparty/robotarium_python_simulator_marbler
+football/build
+football/third_party
 dump
 backup
 mat/scripts/results
 mat/scripts/dump
+mat/scripts/videos
 wandb
 *.sif
 *.npz

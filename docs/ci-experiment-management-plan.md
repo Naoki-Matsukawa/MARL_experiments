@@ -3,6 +3,26 @@
 作成日: 2026-08-09
 対象: Multi-Agent-Transformer リポジトリ
 
+## 進捗（2026-08-09）
+
+フェーズ1（環境ごとのDockerイメージ整備）を `feature/ci-docker-infra` ブランチで実施済み。
+
+- SMAC / football / mpe / vmas / robotarium / ma_mujoco の6環境: ビルド成功、
+  実際に短時間の学習を回して動作確認済み（過程で見つかった実アプリのバグ
+  `n_agents`未設定・`wandb.log`のuse_wandb未ガード・`eval_faulty_node`の
+  Noneハンドリングも合わせて修正）。
+- jaxmarl_robotarium: ビルド・env構築までは成功。学習ループの実行時に
+  vendored `3rdparty/JaxMARL-Robotarium` 内のbarrier-certificate計算で
+  `cuSolver internal error` が再現する（GPU/メモリを変えても再現、CPU
+  フォールバックは学習スクリプト側で禁止されている）。原因はこのリポジトリの
+  コードではなく jaxlib 0.4.38 と本クラスタのGPU/ドライバ組み合わせ側の
+  可能性が高く、今回は未解決のまま。詳細は `docker/README.md` を参照。
+- marbler / dexteroushandenvs: 非公開パッチ・IsaacGymのEULA制約のため保留。
+- 依存管理は当初案のrequirements.txtではなく、環境ごとの
+  `pyproject.toml` + `uv.lock`（`docker/<env>/`）に統一。
+- `3rdparty/MARBLER`, `robotarium_python_simulator`, `JaxMARL-Robotarium`
+  はgit submodule化済み。
+
 ## 0. これは何か
 
 「複数のシミュレーション環境 × GPUクラスタでの実験を、push契機で自動実行できるようにしたい」という要望について、

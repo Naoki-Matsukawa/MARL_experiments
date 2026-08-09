@@ -57,7 +57,8 @@ class MujocoRunner(Runner):
                     for i in range(len(obs)):
                         if random.random() < self.noise_rate:
                             obs[i] = previous_obs[i] 
-                wandb.log({"noise_rate": self.noise_rate})
+                if self.use_wandb:
+                    wandb.log({"noise_rate": self.noise_rate})
 
                 dones_env = np.all(dones, axis=1)
                 reward_env = np.mean(rewards, axis=1).flatten()
@@ -103,12 +104,15 @@ class MujocoRunner(Runner):
                     aver_episode_rewards = np.mean(done_episodes_rewards)
                     print("some episodes done, average rewards: ", aver_episode_rewards)
                     #self.writter.add_scalars("train_episode_rewards", {"aver_rewards": aver_episode_rewards}, total_num_steps)
-                    wandb.log({"train_episode_rewards": aver_episode_rewards}, step=total_num_steps)
+                    if self.use_wandb:
+                        wandb.log({"train_episode_rewards": aver_episode_rewards}, step=total_num_steps)
                     done_episodes_rewards = []
 
             # eval
             if episode % self.eval_interval == 0 and self.use_eval:
-                faulty_nodes = self.all_args.eval_faulty_node
+                # -1 matches faulty_action()'s "no fault" sentinel, same
+                # default as --faulty_node on the training side.
+                faulty_nodes = self.all_args.eval_faulty_node or [-1]
                 for node in faulty_nodes:
                     self.eval(total_num_steps, node)
                     if getattr(self.trainer, "use_distillation", False):

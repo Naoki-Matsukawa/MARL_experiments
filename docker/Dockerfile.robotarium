@@ -1,0 +1,33 @@
+# Official Robotarium simulator (mat/envs/robotarium) — reads
+# 3rdparty/robotarium_python_simulator, a git submodule, from the build
+# context at image build time and from a bind mount at run time.
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/workspace/Multi-Agent-Transformer
+
+WORKDIR /workspace/Multi-Agent-Transformer
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    git \
+    gcc \
+    libblas-dev \
+    liblapack-dev \
+    gfortran \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.8.22 /uv /usr/local/bin/uv
+
+COPY docker/robotarium/pyproject.toml docker/robotarium/uv.lock /tmp/robotarium-project/
+RUN cd /tmp/robotarium-project \
+    && uv export --frozen --no-hashes -o requirements.lock.txt \
+    && uv pip install --system --no-cache -r requirements.lock.txt
+
+COPY . /workspace/Multi-Agent-Transformer
+
+CMD ["/bin/bash"]

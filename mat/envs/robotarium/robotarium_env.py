@@ -35,6 +35,8 @@ class RobotariumEnv(gym.Env):
     def __init__(self, all_args):
         self.num_agents = int(getattr(all_args, "num_agents", 4))
         self.n = self.num_agents
+        # mat/envs/env_wrappers.py's vec-env wrappers read env.n_agents.
+        self.n_agents = self.num_agents
         self.episode_length = int(getattr(all_args, "episode_length", 200))
         self.neighbor_count = int(getattr(all_args, "robotarium_neighbor_count", 3))
         self.sensing_radius = float(getattr(all_args, "robotarium_sensing_radius", 0.75))

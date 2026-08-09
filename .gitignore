@@ -39,9 +39,14 @@ dump/
 # External/local environment assets
 SMAC_Maps/
 
-# Vendored third-party repos (each has its own .git; fetch via setup
-# scripts / submodules instead of committing directly, see docs/)
-3rdparty/
+# Vendored third-party repos. MARBLER / robotarium_python_simulator /
+# JaxMARL-Robotarium are tracked as git submodules (see .gitmodules).
+# StarCraftII is a large binary install fetched by install_sc2.sh.
+# robotarium_python_simulator_marbler is an unpublished local patch,
+# not yet available at a public remote; excluded until it has one
+# (see docs/ci-experiment-management-plan.md).
+3rdparty/StarCraftII/
+3rdparty/robotarium_python_simulator_marbler/
 football/
 mujoco210-linux-x86_64.tar.gz
 

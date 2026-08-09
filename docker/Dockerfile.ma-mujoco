@@ -1,0 +1,49 @@
+# multiagent_mujoco (mat/envs/ma_mujoco) built on mujoco-py 2.1.2, which
+# compiles a Cython extension against a native MuJoCo 2.1.0 install rather
+# than the newer `mujoco` pip package.
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/workspace/Multi-Agent-Transformer \
+    MUJOCO_PY_MUJOCO_PATH=/root/.mujoco/mujoco210 \
+    LD_LIBRARY_PATH=/root/.mujoco/mujoco210/bin:${LD_LIBRARY_PATH}
+
+WORKDIR /workspace/Multi-Agent-Transformer
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    git \
+    build-essential \
+    gcc \
+    patchelf \
+    libosmesa6-dev \
+    libgl1-mesa-glx \
+    libglfw3 \
+    libglew-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /root/.mujoco \
+    && curl -fL https://github.com/google-deepmind/mujoco/releases/download/2.1.0/mujoco210-linux-x86_64.tar.gz \
+        -o /tmp/mujoco210.tar.gz \
+    && tar -xzf /tmp/mujoco210.tar.gz -C /root/.mujoco \
+    && rm /tmp/mujoco210.tar.gz
+
+# mujoco-py's Cython extension is compiled against a newer libstdc++
+# (GLIBCXX_3.4.30+) than the conda base env bundles.
+RUN conda install -y -c conda-forge "libstdcxx-ng>=12" && conda clean -afy
+
+COPY --from=ghcr.io/astral-sh/uv:0.8.22 /uv /usr/local/bin/uv
+
+COPY docker/ma-mujoco/pyproject.toml docker/ma-mujoco/uv.lock /tmp/ma-mujoco-project/
+RUN cd /tmp/ma-mujoco-project \
+    && uv export --frozen --no-hashes -o requirements.lock.txt \
+    && uv pip install --system --no-cache -r requirements.lock.txt
+
+COPY . /workspace/Multi-Agent-Transformer
+
+CMD ["/bin/bash"]

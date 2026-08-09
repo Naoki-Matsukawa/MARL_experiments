@@ -69,6 +69,8 @@ class JaxMARLRobotariumDiscoveryEnv(gym.Env):
         self.jnp = jnp
         self.num_agents = int(getattr(all_args, "num_agents", 4))
         self.n = self.num_agents
+        # mat/envs/env_wrappers.py's vec-env wrappers read env.n_agents.
+        self.n_agents = self.num_agents
         self.max_steps = int(getattr(all_args, "episode_length", 80))
         self.num_landmarks = int(getattr(all_args, "jaxmarl_num_landmarks", 6))
         self.num_sensing = int(getattr(all_args, "jaxmarl_num_sensing", 2))

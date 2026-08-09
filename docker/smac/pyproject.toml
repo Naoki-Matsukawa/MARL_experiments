@@ -1,0 +1,40 @@
+[project]
+name = "mat-smac"
+version = "0.1.0"
+description = "Container-only dependency set for the SMAC (StarCraft II) environment"
+requires-python = "==3.10.*"
+dependencies = [
+    "absl-py==2.3.1",
+    "cloudpickle==2.0.0",
+    "deepdiff==5.8.1",
+    "gym==0.12.4",
+    "imageio==2.16.1",
+    "ipdb==0.13.9",
+    "matplotlib==3.5.1",
+    "mpyq==0.2.5",
+    "numpy==1.26.4",
+    "opencv-python-headless==4.9.0.80",
+    "pillow==9.5.0",
+    "protobuf==3.20.3",
+    "pygame==2.1.2",
+    "pyglet==1.5.26",
+    "pysc2==3.0.0",
+    "pyyaml==6.0.1",
+    "s2clientprotocol==5.0.9.87702.0",
+    "s2protocol==5.0.9.87702.0",
+    "scikit-learn==1.3.2",
+    "scipy==1.11.4",
+    "setproctitle==1.2.2",
+    # wandb==0.12.11 imports pkg_resources at runtime without declaring
+    # setuptools as a dependency; pin it explicitly.
+    "setuptools<81",
+    "tensorboardx==2.5",
+    "tqdm==4.64.0",
+    "wandb==0.12.11",
+]
+
+[tool.uv]
+# This pyproject only pins container dependencies; torch/CUDA come
+# preinstalled from the pytorch/pytorch base image and are intentionally
+# left out so `uv sync` never touches them.
+package = false
