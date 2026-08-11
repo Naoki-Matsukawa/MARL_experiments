@@ -109,13 +109,14 @@ compatibility issue in the vendored dependency, not in this repo's own code.
 
 ## Slurm / Apptainer
 
-Docker is mainly for producing images locally. On Slurm/HPC, prefer
-Apptainer with `--nv`; it exposes the GPU allocation Slurm gives you instead
-of Docker's `--gpus all`. Build a `.sif` from a Docker image where Docker is
-available:
+Docker is mainly for producing images locally — Slurm compute nodes have no
+Docker daemon access, only Apptainer. Apptainer consumes the same Docker
+images directly, so nothing needs rebuilding from scratch. Build a `.sif`
+from a Docker image on shironagasu (where Docker is available) into
+`docker/sif/` (gitignored — these are multi-GB binaries, not repo content):
 
 ```bash
-apptainer build mat-<env>_cuda12.sif docker-daemon://mat-<env>:cuda12
+apptainer build docker/sif/mat-<env>_cuda12.sif docker-daemon://mat-<env>:cuda12
 ```
 
 Then submit, e.g. for SMAC:
@@ -128,6 +129,32 @@ CONTAINER_IMAGE=/path/to/mat-smac_cuda12.sif sbatch mat/scripts/run_yaml_apptain
 and runs `apptainer exec --nv`, which only exposes the GPU Slurm assigned. Do
 not use Docker `--gpus all` inside Slurm unless the cluster explicitly
 requires Docker and scopes devices itself.
+
+**Verified**: `docker/sif/mat-vmas_cuda12.sif` ran `mat/scripts/configs/_ci_smoke/vmas_smoke.yaml`
+to completion on an actual GPU node (`koku`, dgx-a100-80g) via
+`apptainer exec --nv`.
+
+**Known gotcha**: Apptainer bind-mounts `$HOME` into the container by
+default, so Python's user-site mechanism picks up whatever is installed in
+the *host's* `~/.local/lib/python3.10/site-packages` (e.g. a newer numpy)
+ahead of the image's own pinned versions — this silently broke wandb's
+import (`np.float_` was removed in numpy 2.0) even though the image itself
+pins `numpy==1.26.4`. Fixed by passing `--env PYTHONNOUSERSITE=1`, which
+`run_yaml_apptainer_slurm.sh` and `.github/workflows/train-on-push.yml` both
+set.
+
+To make a `slurm:`-mode YAML config use a container instead of the default
+native `.venv-cu121` execution, point it at the Apptainer script:
+
+```yaml
+slurm:
+  script: mat/scripts/run_yaml_apptainer_slurm.sh
+```
+
+`.github/workflows/train-on-push.yml` resolves `CONTAINER_IMAGE` for you
+from the config's `script:` the same way it resolves the Docker tag for
+direct-mode runs — you don't need to set it by hand for a push-triggered
+run, only for a manual `sbatch`.
 
 `mat/scripts/run_yaml_docker.sh` remains a local Docker smoke-test helper
 (defaults to the SMAC image; override `IMAGE`/`CONFIG_PATH` for other envs).

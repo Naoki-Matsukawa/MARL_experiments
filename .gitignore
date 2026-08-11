@@ -62,3 +62,4 @@ dockerfile-mini
 codex.md
 temp.sh
 bu_requirements.txt
+docker/sif/

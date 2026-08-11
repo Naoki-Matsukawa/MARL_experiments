@@ -2,8 +2,13 @@
 # .github/workflows/train-on-push.yml): the presence of a top-level
 # `slurm:` key is what selects Slurm-mode dispatch via iruka2.
 # Push to branch `train/_ci_smoke/vmas_smoke_slurm` to trigger it.
+#
+# slurm.script picks run_yaml_apptainer_slurm.sh (container, isolated
+# per-env deps) over the default run_yaml_slurm.sh (native .venv-cu121,
+# shared across every env — and missing `vmas` entirely, which is what
+# motivated the Apptainer path in the first place).
 slurm:
-  script: mat/scripts/run_yaml_slurm.sh
+  script: mat/scripts/run_yaml_apptainer_slurm.sh
 
 resources:
   num_gpus: 1

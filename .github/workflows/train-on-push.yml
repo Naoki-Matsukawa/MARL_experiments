@@ -58,40 +58,7 @@ jobs:
           echo "script=$SCRIPT" >> "$GITHUB_OUTPUT"
           echo "Resolved $CONFIG_PATH -> script=$SCRIPT mode=$MODE"
 
-      - name: Submit to Slurm via iruka2
-        if: steps.plan.outputs.mode == 'slurm'
-        env:
-          CONFIG_PATH: ${{ steps.plan.outputs.config_path }}
-          BRANCH: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          # /home/mil/matsukawa is shared NFS across shironagasu and iruka2
-          # (the Slurm login node), so this reuses the same clone every
-          # interactive `git pull && sbatch ...` run already uses today —
-          # including its prebuilt .venv-cu121/etc, which a fresh
-          # actions/checkout wouldn't have. flock serializes concurrent
-          # train/** pushes so their `git checkout` calls don't race; it
-          # does mean a manual checkout in that clone at the same moment
-          # could still collide, same as it could today without CI.
-          ssh -o BatchMode=yes iruka2 bash -s -- "$BRANCH" "$CONFIG_PATH" <<'REMOTE'
-          set -euo pipefail
-          BRANCH="$1"
-          CONFIG_PATH="$2"
-          REPO=/home/mil/matsukawa/Multi-Agent-Transformer
-          cd "$REPO"
-          exec 9>.git/ci-slurm-submit.lock
-          flock -w 300 9
-
-          git fetch origin "$BRANCH"
-          git checkout "$BRANCH"
-          git reset --hard "origin/$BRANCH"
-          git submodule update --init 3rdparty/robotarium_python_simulator 3rdparty/JaxMARL-Robotarium 3rdparty/MARBLER
-
-          CONFIG_PATH="$CONFIG_PATH" mat/scripts/submit_yaml_array.sh
-          REMOTE
-
-      - name: Resolve Docker image for this environment
-        if: steps.plan.outputs.mode == 'direct'
+      - name: Resolve environment image (Docker tag + matching Apptainer .sif)
         id: image
         run: |
           set -euo pipefail
@@ -103,12 +70,63 @@ jobs:
             */train_robotarium.py)           IMAGE=mat-robotarium:cuda12 ;;
             */train_jaxmarl_robotarium.py)   IMAGE=mat-jaxmarl-robotarium:cuda12 ;;
             */train_mujoco.py)               IMAGE=mat-ma-mujoco:cuda12 ;;
-            *)
-              echo "::error::No Docker image for script '${{ steps.plan.outputs.script }}' yet (see docker/README.md for which envs have images)."
-              exit 1
-              ;;
+            *)                                IMAGE="" ;;
           esac
+
+          if [ "${{ steps.plan.outputs.mode }}" = "direct" ] && [ -z "$IMAGE" ]; then
+            echo "::error::No Docker image for script '${{ steps.plan.outputs.script }}' yet (see docker/README.md for which envs have images)."
+            exit 1
+          fi
+
+          SIF=""
+          if [ -n "$IMAGE" ]; then
+            SIF="docker/sif/${IMAGE/:/_}.sif"
+          fi
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "sif=$SIF" >> "$GITHUB_OUTPUT"
+
+      - name: Submit to Slurm via iruka2
+        if: steps.plan.outputs.mode == 'slurm'
+        env:
+          CONFIG_PATH: ${{ steps.plan.outputs.config_path }}
+          BRANCH: ${{ github.ref_name }}
+          # Only consulted by mat/scripts/run_yaml_apptainer_slurm.sh, which
+          # a config opts into via its own `slurm.script:` key; plain
+          # run_yaml_slurm.sh (the default) ignores this entirely and uses
+          # the shared clone's native .venv-cu121/etc instead. Empty when
+          # the script has no image yet (e.g. marbler) — same effect.
+          CONTAINER_IMAGE: ${{ steps.image.outputs.sif }}
+        run: |
+          set -euo pipefail
+          # /home/mil/matsukawa is shared NFS across shironagasu and iruka2
+          # (the Slurm login node), so this reuses the same clone every
+          # interactive `git pull && sbatch ...` run already uses today —
+          # including its prebuilt .venv-cu121/etc, which a fresh
+          # actions/checkout wouldn't have. flock serializes concurrent
+          # train/** pushes so their `git checkout` calls don't race; it
+          # does mean a manual checkout in that clone at the same moment
+          # could still collide, same as it could today without CI.
+          ssh -o BatchMode=yes iruka2 bash -s -- "$BRANCH" "$CONFIG_PATH" "$CONTAINER_IMAGE" <<'REMOTE'
+          set -euo pipefail
+          BRANCH="$1"
+          CONFIG_PATH="$2"
+          CONTAINER_IMAGE="$3"
+          REPO=/home/mil/matsukawa/Multi-Agent-Transformer
+          cd "$REPO"
+          exec 9>.git/ci-slurm-submit.lock
+          flock -w 300 9
+
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git reset --hard "origin/$BRANCH"
+          git submodule update --init 3rdparty/robotarium_python_simulator 3rdparty/JaxMARL-Robotarium 3rdparty/MARBLER
+
+          export CONFIG_PATH
+          if [ -n "$CONTAINER_IMAGE" ]; then
+            export CONTAINER_IMAGE="${REPO}/${CONTAINER_IMAGE}"
+          fi
+          mat/scripts/submit_yaml_array.sh
+          REMOTE
 
       - name: Run training on shironagasu
         if: steps.plan.outputs.mode == 'direct'
