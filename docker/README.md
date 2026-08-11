@@ -130,9 +130,27 @@ and runs `apptainer exec --nv`, which only exposes the GPU Slurm assigned. Do
 not use Docker `--gpus all` inside Slurm unless the cluster explicitly
 requires Docker and scopes devices itself.
 
-**Verified**: `docker/sif/mat-vmas_cuda12.sif` ran `mat/scripts/configs/_ci_smoke/vmas_smoke.yaml`
-to completion on an actual GPU node (`koku`, dgx-a100-80g) via
-`apptainer exec --nv`.
+**Verified end-to-end via `train/_ci_smoke/*_smoke_slurm` pushes**: smac,
+mpe, vmas all completed a real training run through Apptainer on an actual
+Slurm GPU node.
+
+**Known Apptainer-specific issues** (none of these show up under Docker,
+since Docker containers are writable by default and don't inject host
+driver libraries the same way):
+
+- **mujoco (ma-mujoco)**: `.sif` images are read-only by default, but
+  mujoco-py compiles a Cython extension into its own site-packages on first
+  import — fails with `OSError: Read-only file system`. Fixed by adding
+  `--writable-tmpfs` to `run_yaml_apptainer_slurm.sh` (an ephemeral overlay,
+  discarded when the job ends).
+- **football**: `apptainer exec --nv` bind-mounts the *host's* GPU/EGL
+  libraries into the container so they match the host driver. On this
+  cluster that host `libEGL.so.1` needs `GLIBC_2.38`, newer than the
+  image's Ubuntu 22.04 base ships — `ImportError: GLIBC_2.38 not found`
+  loading gfootball's engine `.so`. Unresolved; would need a newer-glibc
+  base image for this one environment specifically.
+- **jaxmarl_robotarium**: same cuSolver error as under Docker (see below) —
+  confirms it's a jaxlib/driver issue, not a container-runtime one.
 
 **Known gotcha**: Apptainer bind-mounts `$HOME` into the container by
 default, so Python's user-site mechanism picks up whatever is installed in

@@ -42,7 +42,11 @@ if [[ -n "${RUN_INDEX}" ]]; then
     args+=(--index "${RUN_INDEX}")
 fi
 
-apptainer exec --nv \
+# --writable-tmpfs: .sif images are read-only by default. mujoco-py compiles
+# a Cython extension into its own site-packages dir on first import, which
+# needs somewhere writable; this gives it an ephemeral overlay (discarded
+# when the job ends) instead of a permanently writable image.
+apptainer exec --nv --writable-tmpfs \
     --bind "${REPO_ROOT}:/workspace/Multi-Agent-Transformer" \
     --env SC2PATH=/workspace/Multi-Agent-Transformer/3rdparty/StarCraftII \
     --env WANDB_API_KEY="${WANDB_API_KEY:-}" \
