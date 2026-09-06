@@ -1,0 +1,9 @@
+[submodule "3rdparty/MARBLER"]
+	path = 3rdparty/MARBLER
+	url = https://github.com/GT-STAR-Lab/MARBLER.git
+[submodule "3rdparty/robotarium_python_simulator"]
+	path = 3rdparty/robotarium_python_simulator
+	url = https://github.com/robotarium/robotarium_python_simulator.git
+[submodule "3rdparty/JaxMARL-Robotarium"]
+	path = 3rdparty/JaxMARL-Robotarium
+	url = https://github.com/GT-STAR-Lab/JaxMARL-Robotarium.git

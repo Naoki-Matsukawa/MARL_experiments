@@ -1,5 +1,7 @@
 from .environment import MultiAgentEnv
 from .scenarios import load
+from gym.wrappers import Monitor
+from gym.envs.registration import EnvSpec
 
 
 def MPEEnv(args):
@@ -27,5 +29,7 @@ def MPEEnv(args):
     # create multiagent environment
     env = MultiAgentEnv(world, scenario.reset_world,
                         scenario.reward, scenario.observation, scenario.info)
+    
+  
 
     return env

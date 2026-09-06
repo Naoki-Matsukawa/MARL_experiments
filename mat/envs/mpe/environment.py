@@ -25,6 +25,10 @@ class MultiAgentEnv(gym.Env):
         self.agents = self.world.policy_agents
         # set required vectorized gym env property
         self.n = len(world.policy_agents)
+        # mat/envs/env_wrappers.py's vec-env wrappers read env.n_agents
+        # (the convention every other env in this repo uses); alias it here
+        # rather than renaming self.n, which scenario code also reads.
+        self.n_agents = self.n
         # scenario callbacks
         self.reset_callback = reset_callback
         self.reward_callback = reward_callback

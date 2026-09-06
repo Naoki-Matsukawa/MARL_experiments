@@ -1,0 +1,50 @@
+resources:
+  num_gpus: 1
+
+runs:
+  - name: jaxmarl_robotarium_discovery
+    python: ../../.venv-cu121/bin/python
+    script: train/train_jaxmarl_robotarium.py
+    cwd: mat/scripts
+    cuda_visible_devices: auto
+    env:
+      MPLCONFIGDIR: /tmp/matplotlib-cache
+      XLA_PYTHON_CLIENT_PREALLOCATE: "false"
+      JAX_PLATFORMS: cuda
+    args:
+      user_name: matsukawa-naoki555-university-of-tokyo
+      env_name: JaxMARLRobotarium
+      scenario_name: discovery
+      algorithm_name: mat
+      experiment_name: jaxmarl_robotarium_discovery
+      seed: 1
+      num_agents: 4
+      n_training_threads: 8
+      n_rollout_threads: 8
+      n_eval_rollout_threads: 4
+      episode_length: 80
+      num_env_steps: 1000000
+      lr: 5e-4
+      ppo_epoch: 5
+      num_mini_batch: 1
+      clip_param: 0.05
+      entropy_coef: 0.01
+      gamma: 0.99
+      gain: 0.01
+      save_interval: 100
+      log_interval: 5
+      eval_interval: 25
+      use_eval: true
+      use_value_active_masks: true
+      jaxmarl_num_landmarks: 6
+      jaxmarl_num_sensing: 2
+      jaxmarl_num_tagging: 2
+      jaxmarl_sensing_radius: 0.45
+      jaxmarl_tagging_radius: 0.25
+      jaxmarl_heterogeneity_obs_type: none
+      jaxmarl_update_frequency: 30
+      jaxmarl_step_dist: 0.2
+      jaxmarl_sense_shaping: 1.0
+      jaxmarl_tag_shaping: 5.0
+      jaxmarl_violation_shaping: 0.0
+      jaxmarl_time_shaping: -0.05

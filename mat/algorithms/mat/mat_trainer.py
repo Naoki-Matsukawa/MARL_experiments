@@ -1,10 +1,12 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.distributions import Normal
 from mat.utils.util import get_gard_norm, huber_loss, mse_loss
 from mat.utils.valuenorm import ValueNorm
 from mat.algorithms.utils.util import check
-
+from mat.algorithms.mat.rnn import DiscreteRecurrentPolicy, ContinuousRecurrentPolicy
 
 class MATTrainer:
     """
@@ -42,7 +44,46 @@ class MATTrainer:
         self._use_value_active_masks = args.use_value_active_masks
         self._use_policy_active_masks = args.use_policy_active_masks
         self.dec_actor = args.dec_actor
-        
+
+        student_lr = getattr(args, "student_lr", getattr(policy.optimizer, "defaults", {}).get("lr", 1e-3))
+        self.use_distillation = getattr(args, "distillation", False)
+        self.student_value_coef = getattr(args, "student_value_coef", 1.0)
+        if self.policy.action_type == 'Discrete':
+            policy_cls = DiscreteRecurrentPolicy
+            student_kwargs = {}
+        else:
+            policy_cls = ContinuousRecurrentPolicy
+            student_kwargs = {"log_std_init": getattr(args, "student_log_std_init", 0.0)}
+
+        if self.use_distillation:
+            value_dim = getattr(getattr(self.policy.transformer, "encoder", None), "n_embd", None)
+            use_mlp = getattr(args, "student_use_mlp", False)
+            student_kwargs = {**student_kwargs, "value_dim": value_dim, "use_mlp": use_mlp}
+            self.student_policy = [
+                policy_cls(self.policy.obs_dim, self.policy.act_dim, lr=student_lr, **student_kwargs).to(device)
+                for _ in range(num_agents)
+            ]
+            self.student_optimizers = [student.optimizer for student in self.student_policy]
+            self.student_hidden_state = [None for _ in range(num_agents)]
+        else:
+            self.student_policy = None
+            self.student_optimizers = []
+            self.student_hidden_state = None
+        self.student_kl_coef = getattr(args, "student_kl_coef", 1.0)
+        self.student_rl_coef = getattr(args, "student_rl_coef", 0.1)
+        self.student_aux_value_coef = getattr(args, "student_aux_value_coef", 1.0)
+        self.student_rl_linear_schedule = getattr(args, "student_rl_linear_schedule", False)
+        self.student_rl_schedule_steps = getattr(args, "student_rl_schedule_steps", getattr(args, "num_env_steps", None))
+        self.student_rl_schedule_steps = 1e7
+        start_coef = getattr(args, "student_rl_coef_start", None)
+        if start_coef is None:
+            start_coef = 0.0 if self.student_rl_linear_schedule else self.student_rl_coef
+        self.student_rl_coef_start = start_coef
+        self.student_rl_coef_target = self.student_rl_coef
+        self.student_rl_coef = self.student_rl_coef_start
+        self.student_clip_param = getattr(args, "student_clip_param", self.clip_param)
+        self.current_step = 0
+
         if self._use_valuenorm:
             self.value_normalizer = ValueNorm(1, device=self.device)
         else:
@@ -175,6 +216,17 @@ class MATTrainer:
         train_info['actor_grad_norm'] = 0
         train_info['critic_grad_norm'] = 0
         train_info['ratio'] = 0
+        if self.use_distillation:
+            train_info['student_kl_loss'] = 0
+            train_info['student_rl_loss'] = 0
+            train_info['student_value_loss'] = 0
+            train_info['student_grad_norm'] = 0
+            train_info['student_aux_value_loss'] = 0
+
+
+        # share_obs_batch, obs_batch, rnn_states_batch, rnn_states_critic_batch, actions_batch, \
+        # value_preds_batch, return_batch, masks_batch, active_masks_batch, old_action_log_probs_batch, \
+        # adv_targ, available_actions_batch = sample
 
         for _ in range(self.ppo_epoch):
             data_generator = buffer.feed_forward_generator_transformer(advantages, self.num_mini_batch)
@@ -184,6 +236,104 @@ class MATTrainer:
                 value_loss, critic_grad_norm, policy_loss, dist_entropy, actor_grad_norm, imp_weights \
                     = self.ppo_update(sample)
 
+                share_obs_batch, obs_batch, _, _, actions_batch, _, _, _, active_masks_batch, _, adv_batch, available_actions_batch = sample
+
+                if self.use_distillation and self.policy.action_type == 'Discrete':
+                    dist_info = self.policy.get_action_distribution(
+                        share_obs_batch,
+                        obs_batch,
+                        actions_batch,
+                        available_actions_batch
+                    )
+                    teacher_probs = dist_info['probs'].detach()
+                    teacher_encoder = dist_info.get('encoder_rep')
+                    teacher_encoder = teacher_encoder.detach() if teacher_encoder is not None else None
+
+                    obs_agent_view = self._reshape_agent_view(obs_batch)
+                    actions_agent_view = self._reshape_agent_view(actions_batch)
+                    active_masks_agent_view = self._reshape_agent_view(active_masks_batch)
+                    adv_agent_view = self._reshape_agent_view(adv_batch) if adv_batch is not None else None
+                    teacher_encoder_agent_view = self._reshape_agent_view(teacher_encoder) if teacher_encoder is not None else None
+
+                    for agent_id in range(self.num_agents):
+                        agent_obs = obs_agent_view[:, agent_id, ...]
+                        agent_teacher_probs = teacher_probs[:, agent_id, ...]
+                        agent_actions = actions_agent_view[:, agent_id, ...]
+                        agent_active_masks = active_masks_agent_view[:, agent_id, ...] if active_masks_agent_view is not None else None
+                        agent_advantages = adv_agent_view[:, agent_id, ...] if adv_agent_view is not None else None
+                        agent_teacher_encoder = teacher_encoder_agent_view[:, agent_id, ...] if teacher_encoder_agent_view is not None else None
+
+                        student_loss, hidden_state, student_info = self._calculate_discrete_student_loss(
+                            self.student_policy[agent_id],
+                            agent_obs,
+                            agent_teacher_probs,
+                            agent_actions,
+                            agent_advantages,
+                            agent_active_masks,
+                            agent_teacher_encoder,
+                            self.student_hidden_state[agent_id]
+                        )
+                        train_info['student_kl_loss'] += student_info['kl_loss']
+                        train_info['student_rl_loss'] += student_info['rl_loss']
+                        train_info['student_value_loss'] += student_info['value_loss']
+                        train_info['student_aux_value_loss'] += student_info['aux_value_loss']
+                        self.student_hidden_state[agent_id] = self._detach_hidden(hidden_state)
+
+                        self.student_optimizers[agent_id].zero_grad()
+                        student_loss.backward()
+                        if self._use_max_grad_norm:
+                            student_grad_norm = nn.utils.clip_grad_norm_(self.student_policy[agent_id].parameters(), self.max_grad_norm)
+                            train_info['student_grad_norm'] += student_grad_norm
+                        self.student_optimizers[agent_id].step()
+                elif self.use_distillation and self.policy.action_type != 'Discrete':
+                    dist_info = self.policy.get_action_distribution(
+                        share_obs_batch,
+                        obs_batch,
+                        actions_batch,
+                        available_actions_batch
+                    )
+                    teacher_means = dist_info['means'].detach()
+                    teacher_log_stds = dist_info['log_stds'].detach()
+                    teacher_encoder = dist_info.get('encoder_rep')
+                    teacher_encoder = teacher_encoder.detach() if teacher_encoder is not None else None
+
+                    obs_agent_view = self._reshape_agent_view(obs_batch)
+                    actions_agent_view = self._reshape_agent_view(actions_batch)
+                    active_masks_agent_view = self._reshape_agent_view(active_masks_batch)
+                    adv_agent_view = self._reshape_agent_view(adv_batch) if adv_batch is not None else None
+                    teacher_encoder_agent_view = self._reshape_agent_view(teacher_encoder) if teacher_encoder is not None else None
+                    for agent_id in range(self.num_agents):
+                        agent_obs = obs_agent_view[:, agent_id, ...]
+                        agent_actions = actions_agent_view[:, agent_id, ...]
+                        agent_active_masks = active_masks_agent_view[:, agent_id, ...] if active_masks_agent_view is not None else None
+                        agent_advantages = adv_agent_view[:, agent_id, ...] if adv_agent_view is not None else None
+                        agent_teacher_mean = teacher_means[:, agent_id, ...]
+                        agent_teacher_log_std = teacher_log_stds[:, agent_id, ...]
+                        agent_teacher_encoder = teacher_encoder_agent_view[:, agent_id, ...] if teacher_encoder_agent_view is not None else None
+
+                        student_loss, hidden_state, student_info = self._calculate_continuous_student_loss(
+                            self.student_policy[agent_id],
+                            agent_obs,
+                            agent_teacher_mean,
+                            agent_teacher_log_std,
+                            agent_actions,
+                            agent_advantages,
+                            agent_active_masks,
+                            agent_teacher_encoder,
+                            self.student_hidden_state[agent_id]
+                        )
+                        train_info['student_kl_loss'] += student_info['kl_loss']
+                        train_info['student_rl_loss'] += student_info['rl_loss']
+                        train_info['student_value_loss'] += student_info['value_loss']
+                        train_info['student_aux_value_loss'] += student_info['aux_value_loss']
+                        self.student_hidden_state[agent_id] = self._detach_hidden(hidden_state)
+
+                        self.student_optimizers[agent_id].zero_grad()
+                        student_loss.backward()
+                        if self._use_max_grad_norm:
+                            student_grad_norm = nn.utils.clip_grad_norm_(self.student_policy[agent_id].parameters(), self.max_grad_norm)
+                            train_info['student_grad_norm'] += student_grad_norm
+                        self.student_optimizers[agent_id].step()
                 train_info['value_loss'] += value_loss.item()
                 train_info['policy_loss'] += policy_loss.item()
                 train_info['dist_entropy'] += dist_entropy.item()
@@ -195,6 +345,9 @@ class MATTrainer:
 
         for k in train_info.keys():
             train_info[k] /= num_updates
+
+        if self.use_distillation:
+            train_info['student_rl_coef'] = self.student_rl_coef
  
         return train_info
 
@@ -203,3 +356,258 @@ class MATTrainer:
 
     def prep_rollout(self):
         self.policy.eval()
+    
+    def _reshape_agent_view(self, tensor):
+        """
+        Reshape flattened (mini_batch * num_agents, ...) tensors back to (mini_batch, num_agents, ...).
+        """
+        if tensor is None:
+            return None
+        batch_size = tensor.shape[0]
+        if batch_size % self.num_agents != 0:
+            # already shaped as (mini_batch, num_agents, ...)
+            return tensor
+        mini_batch = batch_size // self.num_agents
+        if torch.is_tensor(tensor):
+            return tensor.contiguous().view(mini_batch, self.num_agents, *tensor.shape[1:])
+        elif isinstance(tensor, np.ndarray):
+            return tensor.reshape(mini_batch, self.num_agents, *tensor.shape[1:])
+        else:
+            raise TypeError(f"Unsupported tensor type for reshape: {type(tensor)}")
+
+    def _detach_hidden(self, hidden_state):
+        if hidden_state is None:
+            return None
+        if isinstance(hidden_state, tuple):
+            return tuple(h.detach() if h is not None else None for h in hidden_state)
+        return hidden_state.detach()
+
+    def _calculate_discrete_student_loss(self, student_policy, obs_batch, teacher_probs_batch, actions_batch,
+                                         advantages_batch=None, active_masks_batch=None, teacher_encoder_batch=None,
+                                         hidden_state=None):
+        student_info = {'kl_loss': 0.0, 'rl_loss': 0.0, 'value_loss': 0.0, 'aux_value_loss': 0.0}
+
+        obs_batch = check(obs_batch).to(**self.tpdv)
+        teacher_probs_batch = teacher_probs_batch.to(**self.tpdv)
+        actions_batch = check(actions_batch).to(**self.tpdv)
+
+        if obs_batch.dim() == 2:
+            obs_batch = obs_batch.unsqueeze(1)
+        actor_hidden, critic_hidden = hidden_state if isinstance(hidden_state, tuple) else (hidden_state, None)
+
+        student_probs, aux_value, new_actor_hidden = student_policy(obs_batch, actor_hidden)
+        student_probs = student_probs.squeeze(1)
+        student_values, new_critic_hidden = student_policy.forward_value(obs_batch, critic_hidden)
+        student_values = student_values.squeeze(1)
+
+        kl_elementwise = F.kl_div(
+            torch.log(student_probs + 1e-8),
+            teacher_probs_batch,
+            reduction='none'
+        ).sum(-1, keepdim=True)
+
+        if active_masks_batch is not None:
+            active_masks_batch = check(active_masks_batch).to(**self.tpdv)
+            kl_loss = (kl_elementwise * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+        else:
+            kl_loss = kl_elementwise.mean()
+
+        rl_loss = torch.tensor(0.0, device=self.device)
+        if self.student_rl_coef > 0 and advantages_batch is not None:
+            advantages_batch = check(advantages_batch).to(**self.tpdv)
+            if advantages_batch.dim() > 1:
+                advantages_batch = advantages_batch.squeeze(-1)
+            if actions_batch.dim() > 1:
+                actions_batch = actions_batch.squeeze(-1)
+
+            actions_long = actions_batch.long()
+            student_selected = torch.gather(student_probs, -1, actions_long.unsqueeze(-1)).squeeze(-1)
+            log_pi = torch.log(student_selected + 1e-8)
+            pg_terms = -(log_pi * advantages_batch)
+
+            if active_masks_batch is not None:
+                active_flat = active_masks_batch.squeeze(-1)
+                rl_loss = (pg_terms * active_flat).sum() / (active_flat.sum() + 1e-8)
+            else:
+                rl_loss = pg_terms.mean()
+
+        value_loss = torch.tensor(0.0, device=self.device)
+        if teacher_encoder_batch is not None:
+            teacher_encoder_batch = teacher_encoder_batch.to(**self.tpdv)
+            # flatten teacher encoder to match flattened student_values
+            teacher_encoder_batch = teacher_encoder_batch.detach()
+            if teacher_encoder_batch.dim() > 2:
+                teacher_encoder_batch = teacher_encoder_batch.reshape(-1, teacher_encoder_batch.shape[-1])
+            if student_values.dim() > 2:
+                student_values = student_values.reshape(-1, student_values.shape[-1])
+            value_elementwise = F.mse_loss(student_values, teacher_encoder_batch, reduction='none').sum(-1, keepdim=True)
+            if active_masks_batch is not None:
+                active_masks_batch = check(active_masks_batch).to(**self.tpdv)
+                if active_masks_batch.dim() > 2:
+                    active_masks_batch = active_masks_batch.view(-1, 1)
+                value_loss = (value_elementwise * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+            else:
+                value_loss = value_elementwise.mean()
+        
+        aux_value_loss = torch.tensor(0.0, device=self.device)
+        if teacher_encoder_batch is not None:
+            teacher_encoder_batch = teacher_encoder_batch.to(**self.tpdv)
+            # flatten teacher encoder to match flattened aux_value
+            teacher_encoder_batch = teacher_encoder_batch.detach()
+            if teacher_encoder_batch.dim() > 2:
+                teacher_encoder_batch = teacher_encoder_batch.reshape(-1, teacher_encoder_batch.shape[-1])
+            if aux_value.dim() > 2:
+                aux_value_reshaped = aux_value.reshape(-1, aux_value.shape[-1])
+            else:
+                aux_value_reshaped = aux_value
+
+            if aux_value_reshaped.size(-1) != teacher_encoder_batch.size(-1):
+                teacher_encoder_batch = teacher_encoder_batch.mean(-1, keepdim=True)
+
+            aux_value_elementwise = F.mse_loss(aux_value_reshaped, teacher_encoder_batch, reduction='none').sum(-1, keepdim=True)
+            if active_masks_batch is not None:
+                active_masks_batch = check(active_masks_batch).to(**self.tpdv)
+                if active_masks_batch.dim() > 2:
+                    active_masks_batch = active_masks_batch.view(-1, 1)
+                aux_value_loss = (aux_value_elementwise * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+            else:
+                aux_value_loss = aux_value_elementwise.mean()
+
+        total_loss = self.student_kl_coef * kl_loss \
+            + self.student_rl_coef * rl_loss \
+                + self.student_value_coef * value_loss \
+                    + self.student_aux_value_coef * aux_value_loss
+        
+        student_info['kl_loss'] = kl_loss.item()
+        student_info['rl_loss'] = rl_loss.item()
+        student_info['value_loss'] = value_loss.item()
+        student_info['aux_value_loss'] = aux_value_loss.item()
+        new_hidden = (new_actor_hidden, new_critic_hidden)
+        return total_loss, new_hidden, student_info
+
+    def _calculate_continuous_student_loss(self, student_policy, obs_batch, teacher_mean_batch, teacher_log_std_batch,
+                                           actions_batch, advantages_batch=None, active_masks_batch=None,
+                                           teacher_encoder_batch=None, hidden_state=None):
+        student_info = {'kl_loss': 0.0, 'rl_loss': 0.0, 'value_loss': 0.0, 'aux_value_loss': 0.0}
+        additional_info = {"rl_coef": self.student_rl_coef}
+        student_info = {**student_info, **additional_info}
+
+        obs_batch = check(obs_batch).to(**self.tpdv)
+        teacher_mean_batch = check(teacher_mean_batch).to(**self.tpdv)
+        teacher_log_std_batch = check(teacher_log_std_batch).to(**self.tpdv)
+        actions_batch = check(actions_batch).to(**self.tpdv)
+
+        if obs_batch.dim() == 2:
+            obs_batch = obs_batch.unsqueeze(1)
+
+        actor_hidden, critic_hidden = hidden_state if isinstance(hidden_state, tuple) else (hidden_state, None)
+
+        student_mean, student_log_std, aux_value, new_actor_hidden = student_policy(obs_batch, actor_hidden)
+        student_mean = student_mean.squeeze(1)
+        student_log_std = student_log_std.squeeze(1)
+        student_values, new_critic_hidden = student_policy.forward_value(obs_batch, critic_hidden)
+        student_values = student_values.squeeze(1)
+
+        teacher_mean = teacher_mean_batch
+        teacher_log_std = teacher_log_std_batch
+
+        var_teacher = torch.exp(2 * teacher_log_std)
+        var_student = torch.exp(2 * student_log_std)
+
+        kl_terms = (student_log_std - teacher_log_std) + \
+            (var_teacher + (teacher_mean - student_mean) ** 2) / (2 * var_student) - 0.5
+        kl_loss = kl_terms.sum(-1, keepdim=True)
+
+        if active_masks_batch is not None:
+            active_masks_batch = check(active_masks_batch).to(**self.tpdv)
+            kl_loss = (kl_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+        else:
+            kl_loss = kl_loss.mean()
+
+        rl_loss = torch.tensor(0.0, device=self.device)
+        if self.student_rl_coef > 0 and advantages_batch is not None:
+            advantages_batch = check(advantages_batch).to(**self.tpdv)
+            if advantages_batch.dim() > 1:
+                advantages_batch = advantages_batch.squeeze(-1)
+
+            student_dist = Normal(student_mean, torch.exp(student_log_std))
+            log_probs = student_dist.log_prob(actions_batch).sum(-1)
+            pg_terms = -(log_probs * advantages_batch)
+
+            if active_masks_batch is not None:
+                active_flat = active_masks_batch.squeeze(-1)
+                rl_loss = (pg_terms * active_flat).sum() / (active_flat.sum() + 1e-8)
+            else:
+                rl_loss = pg_terms.mean()
+
+        value_loss = torch.tensor(0.0, device=self.device)
+        if teacher_encoder_batch is not None:
+            teacher_encoder_batch = check(teacher_encoder_batch).to(**self.tpdv)
+            teacher_encoder_batch = teacher_encoder_batch.detach()
+            if teacher_encoder_batch.dim() > 2:
+                teacher_encoder_batch = teacher_encoder_batch.reshape(-1, teacher_encoder_batch.shape[-1])
+            if student_values.dim() > 2:
+                student_values = student_values.reshape(-1, student_values.shape[-1])
+            value_elementwise = F.mse_loss(student_values, teacher_encoder_batch, reduction='none').sum(-1, keepdim=True)
+            if active_masks_batch is not None:
+                active_flat = check(active_masks_batch).to(**self.tpdv)
+                if active_flat.dim() > 2:
+                    active_flat = active_flat.view(-1, 1)
+                value_loss = (value_elementwise * active_flat).sum() / (active_flat.sum() + 1e-8)
+            else:
+                value_loss = value_elementwise.mean()
+
+        aux_value_loss = torch.tensor(0.0, device=self.device)
+        if teacher_encoder_batch is not None:
+            teacher_encoder_batch = check(teacher_encoder_batch).to(**self.tpdv)
+            teacher_encoder_batch = teacher_encoder_batch.detach()
+            if teacher_encoder_batch.dim() > 2:
+                teacher_encoder_batch = teacher_encoder_batch.reshape(-1, teacher_encoder_batch.shape[-1])
+            if aux_value.dim() > 2:
+                aux_value_reshaped = aux_value.reshape(-1, aux_value.shape[-1])
+            else:
+                aux_value_reshaped = aux_value
+            
+            if aux_value_reshaped.size(-1) != teacher_encoder_batch.size(-1):
+                teacher_encoder_batch = teacher_encoder_batch.mean(-1, keepdim=True)
+
+            aux_value_elementwise = F.mse_loss(aux_value_reshaped, teacher_encoder_batch, reduction='none').sum(-1, keepdim=True)
+            if active_masks_batch is not None:
+                active_flat = check(active_masks_batch).to(**self.tpdv)
+                if active_flat.dim() > 2:
+                    active_flat = active_flat.view(-1, 1)
+                aux_value_loss = (aux_value_elementwise * active_flat).sum() / (active_flat.sum() + 1e-8)
+            else:
+                aux_value_loss = aux_value_elementwise.mean()
+
+        total_loss = self.student_kl_coef * kl_loss \
+            + self.student_rl_coef * rl_loss \
+            + self.student_value_coef * value_loss \
+            + self.student_aux_value_coef * aux_value_loss
+        
+        student_info['kl_loss'] = kl_loss.item()
+        student_info['rl_loss'] = rl_loss.item()
+        student_info['value_loss'] = value_loss.item()
+        student_info['aux_value_loss'] = aux_value_loss.item()
+        new_hidden = (new_actor_hidden, new_critic_hidden)
+        return total_loss, new_hidden, student_info
+    
+    def schedule_student_rl_coef(self, current_step):
+        """
+        Linearly increase the student RL coefficient as training progresses.
+        The value ramps from ``student_rl_coef_start`` to ``student_rl_coef_target``
+        over ``student_rl_schedule_steps`` steps and stays clamped afterwards.
+        """
+        if not self.student_rl_linear_schedule:
+            return self.student_rl_coef
+
+        if self.student_rl_schedule_steps in (None, 0):
+            self.student_rl_coef = self.student_rl_coef_target
+            return self.student_rl_coef
+
+        progress = float(current_step) / float(self.student_rl_schedule_steps)
+        progress = max(0.0, min(1.0, progress))
+        self.student_rl_coef = self.student_rl_coef_start + (
+            self.student_rl_coef_target - self.student_rl_coef_start
+        ) * progress
+        return self.student_rl_coef

@@ -4,7 +4,6 @@ import numpy as np
 import torch
 from tensorboardX import SummaryWriter
 from mat.utils.shared_buffer import SharedReplayBuffer
-from mat.algorithms.mat.mat_trainer import MATTrainer as TrainAlgo
 from mat.algorithms.mat.algorithm.transformer_policy import TransformerPolicy as Policy
 
 def _t2n(x):
@@ -52,6 +51,13 @@ class Runner(object):
         # dir
         self.model_dir = self.all_args.model_dir
 
+        # noise rate to obs
+
+        self.final_noise_rate = self.all_args.final_noise_rate if self.all_args.final_noise_rate is not None else 0.0
+        self.eval_noise_rate = self.all_args.eval_noise_rate if self.all_args.eval_noise_rate is not None else 0.0
+        self.gradual = self.all_args.gradual if self.all_args.gradual is not None else False
+        self.noise_std = self.all_args.noise_std if self.all_args.noise_std is not None else 0.0
+
         if self.use_wandb:
             self.save_dir = str(wandb.run.dir)
             self.run_dir = str(wandb.run.dir)
@@ -71,19 +77,74 @@ class Runner(object):
         print("share_obs_space: ", self.envs.share_observation_space)
         print("act_space: ", self.envs.action_space)
 
+
+        if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
+            from mat.algorithms.mat.mat_trainer import MATTrainer as TrainAlgo
+            from mat.algorithms.mat.algorithm.transformer_policy import TransformerPolicy as Policy
+        elif self.algorithm_name == "pld":
+            from mat.algorithms.PLD.pld_trainer import PLDTrainer as TrainAlgo
+            from mat.algorithms.PLD.pld_policy import PLDPolicy as Policy
+        elif self.algorithm_name == "cdbd":
+            from mat.algorithms.CDBD.cdbd_trainer import CDBDTrainer as TrainAlgo
+            from mat.algorithms.CDBD.cdbd_policy import CDBDPolicy as Policy
+        elif self.algorithm_name == "r_mappo":
+            from mat.algorithms.r_mappo.r_mappo import R_MAPPO as TrainAlgo
+            from mat.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
+        elif self.algorithm_name == "happo":
+            from mat.algorithms.happo.happo import HAPPO as TrainAlgo
+            from mat.algorithms.happo.algorithm.HAPPOPolicy import HAPPOPolicy as Policy
+        else:
+            raise NotImplementedError
         # policy network
-        self.policy = Policy(self.all_args,
-                             self.envs.observation_space[0],
-                             share_observation_space,
-                             self.envs.action_space[0],
-                             self.num_agents,
+        if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
+            self.policy = Policy(self.all_args,
+                                 self.envs.observation_space[0],
+                                 share_observation_space,
+                                 self.envs.action_space[0],
+                                 self.num_agents,
+                                 device=self.device)
+        elif self.algorithm_name == "pld":
+            self.policy = Policy(self.all_args,
+                                 self.envs.observation_space[0],
+                                 share_observation_space,
+                                 self.envs.action_space[0],
+                                 self.num_agents,
+                                 device=self.device)
+        elif self.algorithm_name == "cdbd":
+            self.policy = Policy(self.all_args,
+                                 self.envs.observation_space[0],
+                                 share_observation_space,
+                                 self.envs.action_space[0],
+                                 self.num_agents,
+                                 device=self.device)
+        elif self.algorithm_name == "r_mappo" or self.algorithm_name == "happo":
+            self.policy = Policy(self.all_args,
+                                 self.envs.observation_space[0],
+                                 share_observation_space,
+                                 self.envs.action_space[0],
                              device=self.device)
 
         if self.model_dir is not None:
             self.restore(self.model_dir)
 
+        if self.algorithm_name == "pld":
+            self.all_args.use_valuenorm = False
+            self.all_args.use_popart = False
+        if self.algorithm_name == "cdbd":
+            self.all_args.use_valuenorm = False
+            self.all_args.use_popart = False
+
         # algorithm
-        self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device=self.device)
+        if self.algorithm_name == "mat" or self.algorithm_name == "mat_dec":
+            self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device = self.device)
+        elif self.algorithm_name == "pld":
+            self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device = self.device)
+        elif self.algorithm_name == "cdbd":
+            self.trainer = TrainAlgo(self.all_args, self.policy, self.num_agents, device = self.device)
+        elif self.algorithm_name == "r_mappo" or self.algorithm_name == "happo":
+            self.trainer = TrainAlgo(self.all_args, self.policy, device = self.device)
+        else:
+            raise NotImplementedError
         
         # buffer
         self.buffer = SharedReplayBuffer(self.all_args,
@@ -116,7 +177,11 @@ class Runner(object):
     def compute(self):
         """Calculate returns for the collected data."""
         self.trainer.prep_rollout()
-        if self.buffer.available_actions is None:
+        if self.algorithm_name in ("r_mappo", "happo"):
+            next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
+                                                         np.concatenate(self.buffer.rnn_states_critic[-1]),
+                                                         np.concatenate(self.buffer.masks[-1]))
+        elif self.buffer.available_actions is None:
             next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
                                                          np.concatenate(self.buffer.obs[-1]),
                                                          np.concatenate(self.buffer.rnn_states_critic[-1]),
@@ -127,6 +192,7 @@ class Runner(object):
                                                          np.concatenate(self.buffer.rnn_states_critic[-1]),
                                                          np.concatenate(self.buffer.masks[-1]),
                                                          np.concatenate(self.buffer.available_actions[-1]))
+
         next_values = np.array(np.split(_t2n(next_values), self.n_rollout_threads))
         self.buffer.compute_returns(next_values, self.trainer.value_normalizer)
     

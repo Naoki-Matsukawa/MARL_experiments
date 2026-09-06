@@ -1,0 +1,44 @@
+resources:
+  require_cuda: true
+  num_gpus: 1
+
+runs:
+  - name: robotarium_navigation
+    python: ../../.venv-cu121/bin/python
+    script: train/train_robotarium.py
+    cwd: mat/scripts
+    cuda_visible_devices: auto
+    env:
+      MPLCONFIGDIR: /tmp/matplotlib-cache
+    args:
+      user_name: matsukawa-naoki555-university-of-tokyo
+      env_name: Robotarium
+      scenario_name: navigation
+      algorithm_name: mat
+      experiment_name: robotarium_navigation
+      seed: 1
+      num_agents: 4
+      n_training_threads: 8
+      n_rollout_threads: 8
+      n_eval_rollout_threads: 4
+      episode_length: 200
+      num_env_steps: 1000000
+      lr: 5e-4
+      ppo_epoch: 5
+      num_mini_batch: 1
+      clip_param: 0.05
+      entropy_coef: 0.01
+      gamma: 0.99
+      gain: 0.01
+      save_interval: 100
+      log_interval: 5
+      eval_interval: 25
+      use_eval: true
+      use_value_active_masks: true
+      robotarium_neighbor_count: 3
+      robotarium_sensing_radius: 0.75
+      robotarium_goal_radius: 0.08
+      robotarium_collision_penalty: 1.0
+      robotarium_progress_reward_scale: 10.0
+      robotarium_step_penalty: 0.01
+      robotarium_goal_reward: 1.0

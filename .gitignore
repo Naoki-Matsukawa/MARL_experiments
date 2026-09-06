@@ -1,1 +1,65 @@
+# OS/editor files
 .DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Python environments and packaging
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Project outputs and local artifacts
+logs/
+log/
+checkpoints/
+wandb/
+runs/
+results/
+dump/
+*.pt
+*.pth
+*.pkl
+
+# External/local environment assets
+SMAC_Maps/
+
+# Vendored third-party repos. MARBLER / robotarium_python_simulator /
+# JaxMARL-Robotarium are tracked as git submodules (see .gitmodules).
+# StarCraftII is a large binary install fetched by install_sc2.sh.
+# robotarium_python_simulator_marbler is an unpublished local patch,
+# not yet available at a public remote; excluded until it has one
+# (see docs/ci-experiment-management-plan.md).
+3rdparty/StarCraftII/
+3rdparty/robotarium_python_simulator_marbler/
+football/
+mujoco210-linux-x86_64.tar.gz
+
+# Archive/zip extraction junk
+__MACOSX/
+
+# Personal backups and scratch files, not part of the project source
+backup/
+docker-bu
+docker-football
+dockerfile
+dockerfile-mini
+codex.md
+temp.sh
+bu_requirements.txt
+docker/sif/

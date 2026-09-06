@@ -1,0 +1,41 @@
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/workspace/Multi-Agent-Transformer \
+    SC2PATH=/workspace/Multi-Agent-Transformer/3rdparty/StarCraftII
+
+WORKDIR /workspace/Multi-Agent-Transformer
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    git \
+    gcc \
+    libgl1 \
+    libglib2.0-0 \
+    libosmesa6 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    procps \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.8.22 /uv /usr/local/bin/uv
+
+# Dependencies are pinned per-environment via docker/smac/{pyproject.toml,uv.lock}.
+# `uv export` turns the lock into a plain requirements list, which `uv pip
+# install --system` installs straight into the base image's existing conda
+# env (torch/CUDA stay exactly as shipped by the pytorch/pytorch base image;
+# `uv sync`'s own venv management would otherwise displace them).
+COPY docker/smac/pyproject.toml docker/smac/uv.lock /tmp/smac-project/
+RUN cd /tmp/smac-project \
+    && uv export --frozen --no-hashes -o requirements.lock.txt \
+    && uv pip install --system --no-cache -r requirements.lock.txt
+
+COPY . /workspace/Multi-Agent-Transformer
+
+CMD ["/bin/bash"]

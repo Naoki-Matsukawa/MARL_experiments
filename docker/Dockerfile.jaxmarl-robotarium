@@ -1,0 +1,39 @@
+# JaxMARL-Robotarium discovery env (mat/envs/jaxmarl_robotarium) — reads
+# 3rdparty/JaxMARL-Robotarium, a git submodule, directly off disk.
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/workspace/Multi-Agent-Transformer
+
+WORKDIR /workspace/Multi-Agent-Transformer
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    git \
+    gcc \
+    libgl1 \
+    libglib2.0-0 \
+    libosmesa6 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# jaxlib/mujoco wheels are linked against a newer libstdc++
+# (GLIBCXX_3.4.30+) than the conda base env bundles.
+RUN conda install -y -c conda-forge "libstdcxx-ng>=12" && conda clean -afy
+
+COPY --from=ghcr.io/astral-sh/uv:0.8.22 /uv /usr/local/bin/uv
+
+COPY docker/jaxmarl-robotarium/pyproject.toml docker/jaxmarl-robotarium/uv.lock /tmp/jaxmarl-robotarium-project/
+RUN cd /tmp/jaxmarl-robotarium-project \
+    && uv export --frozen --no-hashes -o requirements.lock.txt \
+    && uv pip install --system --no-cache -r requirements.lock.txt
+
+COPY . /workspace/Multi-Agent-Transformer
+
+CMD ["/bin/bash"]

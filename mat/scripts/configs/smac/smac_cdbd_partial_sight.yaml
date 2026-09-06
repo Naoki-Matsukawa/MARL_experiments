@@ -1,0 +1,56 @@
+resources:
+  num_gpus: 1
+  gpus_per_run: 1
+  require_cuda: true
+  startup_stagger_seconds: 60
+
+slurm:
+  script: mat/scripts/run_yaml_slurm.sh
+
+defaults:
+  cwd: mat/scripts
+  python: ../../.venv-cu121/bin/python
+  cuda_visible_devices: auto
+  script: train/train_smac.py
+  env:
+    MAT_ENV_RESET_STAGGER_SECONDS: 0.5
+  args:
+    user_name: matsukawa-naoki555-university-of-tokyo
+    env_name: StarCraft2
+    algorithm_name: cdbd
+    map_name: 3s5z_vs_3s6z
+    n_training_threads: 16
+    n_rollout_threads: 32
+    num_mini_batch: 1
+    episode_length: 100
+    num_env_steps: 30000000
+    lr: 5e-4
+    ppo_epoch: 5
+    clip_param: 0.05
+    save_interval: 100000
+    log_interval: 1
+    use_recurrent_policy: true
+    use_value_active_masks: true
+    use_eval: true
+    save_debug_render: true
+    debug_render_format: gif
+    debug_render_episodes: 1
+    debug_render_interval: 4
+    debug_render_fps: 8
+    debug_render_show_sight: true
+    debug_render_dir: "debug_renders/{name}_seed{seed}"
+    gain: 0.01
+    entropy_coef: 0.01
+    gamma: 0.99
+    max_grad_norm: 5
+    noise_std: 0
+    sight_range: 7
+    mask_attack_by_sight: true
+    cdbd_belief_coef: 1.0
+    cdbd_teacher_model_dir: /home/mil/matsukawa/Multi-Agent-Transformer/mat/scripts/results/StarCraft2/3s5z_vs_3s6z/mat/distill_partial_sight7_ejitter0/wandb/run-20260527_040234-1phfeo7o/files/transformer_9374.pt
+
+runs:
+  - name: smac_cdbd_partial_sight7
+    seeds: [1]
+    args:
+      experiment_name: cdbd_partial_sight7

@@ -1,0 +1,34 @@
+# See vmas_smoke_slurm.yaml for the pattern. Push to
+# train/_ci_smoke/mujoco_smoke_slurm to trigger it.
+slurm:
+  script: mat/scripts/run_yaml_apptainer_slurm.sh
+
+resources:
+  num_gpus: 1
+  gpus_per_run: 1
+
+defaults:
+  script: train/train_mujoco.py
+  cwd: mat/scripts
+  cuda_visible_devices: auto
+  args:
+    env_name: mujoco
+    scenario: Hopper-v2
+    agent_conf: 3x1
+    agent_obsk: 0
+    algorithm_name: mat
+    experiment_name: ci_smoke_mujoco_slurm
+    seed: 1
+    n_training_threads: 1
+    n_rollout_threads: 1
+    n_eval_rollout_threads: 1
+    episode_length: 10
+    num_env_steps: 20
+    ppo_epoch: 1
+    num_mini_batch: 1
+    # See mat/config.py: --use_wandb is `action='store_false'`, so *setting*
+    # it here (true) is what disables wandb logging.
+    use_wandb: true
+
+runs:
+  - name: mujoco_smoke_slurm

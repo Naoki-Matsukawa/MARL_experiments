@@ -1,0 +1,34 @@
+# Tiny end-to-end smoke test for the train/** push -> GitHub Actions ->
+# Docker -> run_yaml.py pipeline (see .github/workflows/train-on-push.yml).
+# Not a real experiment: a couple of PPO updates, no eval, wandb disabled.
+# Push to branch `train/_ci_smoke/vmas_smoke` to trigger it.
+defaults:
+  script: train/train_vmas.py
+  cwd: mat/scripts
+  cuda_visible_devices: auto
+  env:
+    MPLBACKEND: Agg
+    MPLCONFIGDIR: /tmp/matplotlib-cache
+    DISPLAY: ""
+  args:
+    env_name: VMAS
+    scenario_name: navigation
+    algorithm_name: mat
+    experiment_name: ci_smoke_vmas
+    seed: 1
+    n_training_threads: 1
+    n_rollout_threads: 1
+    n_eval_rollout_threads: 1
+    episode_length: 10
+    num_env_steps: 20
+    ppo_epoch: 1
+    num_mini_batch: 1
+    vmas_n_agents: 4
+    vmas_continuous_actions: true
+    vmas_device: cpu
+    # See mat/config.py: --use_wandb is `action='store_false'`, so *setting*
+    # it here (true) is what disables wandb logging.
+    use_wandb: true
+
+runs:
+  - name: vmas_smoke
