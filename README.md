@@ -72,6 +72,32 @@ their variants are ignored.
 The MAT algorithm and the original implementation are due to the upstream
 authors. Please cite the original work when using MAT:
 
+## Research abstract
+
+Multi-agent reinforcement learning (MARL) is a promising approach for
+cooperative tasks involving multiple decision-makers, including multi-robot
+systems. Centralized execution can exploit the observations of all agents but
+is often impractical under communication and scalability constraints.
+Decentralized execution works under those constraints, but can lose
+performance because each agent acts from local observations alone.
+
+This research investigates policy distillation from a centralized MAT teacher
+to decentralized student policies. The goal is to transfer the teacher's
+coordinated strategy while retaining an execution-time policy that is usable
+when communication is limited. The experiments evaluate this approach in
+Google Research Football (GRF) and the StarCraft II Multi-Agent Challenge
+(SMAC).
+
+## Reported results
+
+The following learning curves are reproduced from the accompanying thesis.
+They compare MAT, its distilled student policy, MAPPO, and HAPPO; they are
+research results rather than continuously updated CI benchmarks.
+
+| Google Research Football: `academy_counterattack_easy` | SMAC: `3s5z_vs_3s6z` |
+| --- | --- |
+| <img src="images/research/academy_counterattack_easy.png" alt="GRF academy_counterattack_easy evaluation score learning curves" width="100%"> | <img src="images/research/3s5z_vs_3s6z.png" alt="SMAC 3s5z_vs_3s6z evaluation score learning curves" width="100%"> |
+
 
 ## Multi-Agent Sequential Decision Paradigm
 
