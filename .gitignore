@@ -2,6 +2,7 @@
 .DS_Store
 .vscode/
 .idea/
+.kilo/
 *.swp
 *.swo
 
@@ -12,7 +13,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.ipynb_checkpoints/
 .coverage
+coverage.xml
 htmlcov/
 
 # Python environments and packaging
@@ -23,6 +29,12 @@ ENV/
 build/
 dist/
 *.egg-info/
+
+# Local configuration and credentials. Commit a redacted .env.example instead.
+.env
+.env.*
+!.env.example
+.direnv/
 
 # Project outputs and local artifacts
 logs/
@@ -35,6 +47,7 @@ dump/
 *.pt
 *.pth
 *.pkl
+*.sif
 
 # External/local environment assets
 SMAC_Maps/
@@ -63,3 +76,5 @@ codex.md
 temp.sh
 bu_requirements.txt
 docker/sif/
+
+docs/

@@ -7,21 +7,21 @@ the same file.
 Run examples from the repository root:
 
 ```bash
-uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac_single.yaml --dry-run
-uv run python mat/scripts/run_yaml.py mat/scripts/configs/partial_enemy_jitter.yaml --dry-run
-uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac_distillation_partial_enemy_jitter.yaml --dry-run
+uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac/smac_single.yaml --dry-run
+uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac/partial_enemy_jitter.yaml --dry-run
+uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac/smac_distillation_partial_enemy_jitter.yaml --dry-run
 ```
 
 Main student-teacher random/partial experiment:
 
 ```bash
-uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac_distillation_partial_enemy_jitter.yaml
+uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac/smac_distillation_partial_enemy_jitter.yaml
 ```
 
 Submit expanded runs as separate Slurm array tasks:
 
 ```bash
-CONFIG_PATH=mat/scripts/configs/smac_distillation_partial_enemy_jitter.yaml \
+CONFIG_PATH=mat/scripts/configs/smac/smac_distillation_partial_enemy_jitter.yaml \
 mat/scripts/submit_yaml_array.sh
 ```
 
@@ -41,19 +41,17 @@ slurm:
 GPU from this pool. Slurm submission uses the same values to submit one expanded
 run per array task with at most `num_gpus` concurrent tasks.
 
-Available case files:
+Available experiment families:
 
-- `smac_single.yaml`
-- `smac_multi.yaml`
-- `smac_few_shot.yaml`
-- `smac_pld.yaml`
-- `smac_distillation.yaml`
-- `partial_enemy_jitter.yaml`
-- `smac_distillation_partial_enemy_jitter.yaml`
-- `inspect_enemy_jitter.yaml`
+- `smac/*.yaml`: SMAC training, few-shot, PLD, CDBD, distillation, and
+  partial-observation experiments.
+- `vmas/*.yaml`: VMAS navigation, sampling, and discovery experiments.
+- `marbler/*.yaml`: MARBLER and Robotarium experiments.
+- `_ci_smoke/*.yaml`: short CI smoke-test manifests; these are not intended as
+  research experiment templates.
 
-`experiments.yaml` is kept as the older single-registry style, but new runs
-should prefer the split case files.
+`smac/experiments.yaml` is kept as the older single-registry style, but new
+runs should prefer the split case files.
 
 YAML keys under `args` are translated directly to CLI flags. For example:
 

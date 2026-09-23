@@ -1,8 +1,22 @@
-# Multi-Agent Transformer
+# Multi-Agent Transformer — Research Fork
 
-This is the **official implementation** of MAT. MAT is a novel neural network based on the encoder-decoder architecture that implements a multi-agent learning process through sequence models, aiming to build the bridge between MARL and SM so that the modeling power of modern sequence models, the Transformer, can be unleashed for MARL. 
+> **Research fork.** This repository is based on the original
+> [PKU-MARL/Multi-Agent-Transformer](https://github.com/PKU-MARL/Multi-Agent-Transformer)
+> implementation. It is not the official implementation of MAT.
 
-**For more details, please visit our page site about Muti-Agent Transformer: https://sites.google.com/view/multi-agent-transformer.**
+This repository extends MAT for reproducible multi-agent reinforcement
+learning experiments across multiple simulators. In addition to the upstream
+implementation, it provides:
+
+- per-environment Docker images with locked dependencies;
+- YAML-defined experiments, parameter sweeps, and local GPU selection;
+- Slurm and Apptainer launch paths for cluster experiments; and
+- git submodules for the third-party simulators used by selected environments.
+
+The original MAT method is an encoder-decoder architecture for multi-agent
+learning through sequence models. For the original project, paper, and method
+details, see the upstream repository and project page:
+https://sites.google.com/view/multi-agent-transformer.
 
 In short, MAT:
 
@@ -22,39 +36,41 @@ We present GIFs below to show the architecture and dynamic data flow of MAT.
 |Architecture of MAT|    
  
 
-## Installation
+## Running experiments
 
-### Dependences
-``` Bash
-pip install -r requirements.txt
+This fork supports SMAC, Football, MPE, VMAS, Robotarium,
+JaxMARL-Robotarium, and multi-agent MuJoCo with environment-specific Docker
+images. MARBLER and DexterousHandEnvs have additional external constraints;
+refer to the Docker guide before using them.
+
+Initialize the simulator submodules before building or running an environment
+that needs them:
+
+```bash
+git submodule update --init --recursive
 ```
 
-### Multi-agent MuJoCo
-Following the instructios in https://github.com/openai/mujoco-py and https://github.com/schroederdewitt/multiagent_mujoco to setup a mujoco environment. In the end, remember to set the following environment variables:
-``` Bash
-LD_LIBRARY_PATH=${HOME}/.mujoco/mujoco200/bin;
-LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libGLEW.so
+The recommended workflow is to build the image for the target environment and
+define each experiment in YAML. For example, inspect a planned SMAC run from
+the repository root with:
+
+```bash
+uv run python mat/scripts/run_yaml.py mat/scripts/configs/smac/smac_single.yaml --dry-run
 ```
 
-### StarCraft II & SMAC
-Run the script
-``` Bash
-bash install_sc2.sh
-```
-Or you could install them manually to other path you like, just follow here: https://github.com/oxwhirl/smac.
+Detailed instructions are maintained alongside the implementation:
 
-### Google Research Football
-Please following the instructios in https://github.com/google-research/football. 
+- [Docker environments and known limitations](docker/README.md)
+- [YAML experiment configuration, sweeps, and Slurm submission](mat/scripts/configs/README.md)
 
-### Bi-DexHands 
-Please following the instructios in https://github.com/PKU-MARL/DexterousHands. 
+Training writes local results, checkpoints, W&B artifacts, and Slurm output to
+ignored paths. Keep credentials outside the repository; local `.env` files and
+their variants are ignored.
 
-## How to run
-When your environment is ready, you could run shells in the "scripts" folder with algo="mat" or algo="mat_dec". For example:
-``` Bash
-./train_mujoco.sh  # run MAT/MAT-Dec on Multi-agent MuJoCo
-```
-If you would like to change the configs of experiments, you could modify sh files or look for config.py for more details.
+## Upstream attribution
+
+The MAT algorithm and the original implementation are due to the upstream
+authors. Please cite the original work when using MAT:
 
 
 ## Multi-Agent Sequential Decision Paradigm
@@ -108,4 +124,3 @@ Please cite as following if you think this work is helpful for you:
   year={2022}
 }
 ```
-
